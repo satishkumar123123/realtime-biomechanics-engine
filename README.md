@@ -4,7 +4,7 @@ A real-time monocular biomechanical analysis system computing physiological join
 
 ## Project Structure
 - `core/biomechanics.py`: Joint angle vector computation and goniometric calibration.
-- `main.py`: Webcam ingestion, model inference, and real-time visualization HUD.
+- `main.py`: Integrated async capture, pose inference, filtering, and desktop HUD.
 
 ## Setup Instructions
 
@@ -22,7 +22,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Run the baseline engine:
+3. Run the desktop application (Python 3.10-3.12 recommended):
 ```bash
 python main.py
 ```
@@ -32,8 +32,7 @@ python main.py
 `core/capture.py` provides a daemon producer with a lock-protected latest-frame
 mailbox. It uses only OpenCV, NumPy, and the Python standard library; the existing
 MediaPipe dependency is still required by the baseline analysis application.
-The baseline `main.py` remains a synchronous reference; use this module for the
-next processing-pipeline integration.
+The desktop `main.py` uses this module to capture independently of inference.
 
 ```python
 from core.capture import VideoCaptureAsync
@@ -116,7 +115,7 @@ shoulder/hip reference rays. Elbow/knee triplet angles cannot distinguish
 hyperextension from flexion, and ankle-foot-index geometry is only a proxy for
 the clinical ankle axis. These geometric estimates have not been clinically
 validated. Existing elbow/knee/hip dictionary keys remain compatible with the
-baseline consumer.
+desktop consumer.
 
 Run all geometry and capture tests:
 
@@ -174,5 +173,61 @@ from median coordinates across reliable stationary frames. Reset/recalibrate for
 a new subject or tracking session. Treat flags as measurement gates; they are
 consistency estimates rather than clinical anthropometric limits.
 
-No dependencies were added. These components are available for pipeline
-integration; the baseline `main.py` does not yet apply the filter or checker.
+The desktop application applies the filter before angle computation. The optional
+bone-length checker remains an explicit calibration/check API; it is not enabled
+automatically without a trustworthy subject baseline.
+
+## Desktop pipeline and diagnostics
+
+The camera worker continuously captures while the main thread runs inference,
+filters world coordinates, computes angles and renders the UI. Fresh sequence
+numbers prevent repeated inference on the same frame. MediaPipe uses complexity
+1, `smooth_landmarks=False`, and no segmentation. Only normalized image landmarks
+are used for the wireframe; angle computations use filtered metric coordinates.
+
+```bash
+python main.py --camera 0 --width 640 --height 480 --fps 60
+# Optional meter-scale responsiveness tuning:
+python main.py --beta 5
+```
+
+The translucent sidebar shows all twelve left/right measurements and red
+`Occluded / Low Conf` indicators. Geometric degeneracy is separately labeled
+`Undefined geometry`. Values use neutral-zero degrees and the signs documented
+above. `q` or ESC exits; `r` resets filter history. Closing the window also exits.
+Tracking loss clears filter history. Camera disconnects/stalls exit with an error
+message after resource cleanup. The stop timeout for a blocked native camera
+read remains subject to the capture module's documented limitation.
+
+Diagnostics use high-resolution monotonic clocks:
+
+- Current inference latency times only `pose.process`, excluding color conversion.
+- Mean inference latency uses the latest 120 processed frames.
+- Capture-to-UI mean and P95 use the latest 120 completed frames. They include
+  frame-mailbox residence, color conversion, inference, filtering, rendering,
+  `imshow` and the event pump. The displayed aggregates lag by one completed frame.
+- Achieved FPS comes from completed display intervals, not the camera FPS request.
+
+Capture timestamps are taken after the driver's read completes. OpenCV cannot
+measure sensor exposure or actual screen presentation; these are host pipeline
+timings, not camera-to-photon measurements. A 60-FPS request is not a throughput
+guarantee: model speed, hardware, camera support and display all matter.
+
+`requirements.txt` pins MediaPipe 0.10.21 for the requested legacy Pose API and
+compatible NumPy/OpenCV versions. It uses only `opencv-contrib-python` because
+MediaPipe requires that wheel, which supplies `cv2`; avoid also installing
+`opencv-python` or headless variants into the same environment.
+
+Run headless integration tests without a webcam/window:
+
+```bash
+python -m unittest tests.test_pipeline -v
+python -m unittest discover -s tests -v
+```
+
+Tests inject camera/model/display dependencies while exercising real filtering,
+angle computation and OpenCV HUD rendering. They cover blank frames, synthetic
+poses, async capture, 120-frame diagnostics, resets/exits, stalls/disconnects and
+cleanup after failures. A real MediaPipe blank-frame smoke test also runs when
+MediaPipe is installed. Actual webcam performance and visible desktop interaction
+must be checked on the target machine.
