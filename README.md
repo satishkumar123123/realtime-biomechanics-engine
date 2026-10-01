@@ -123,3 +123,56 @@ Run all geometry and capture tests:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+## Adaptive temporal filtering
+
+`core/filter.py` provides a NumPy-vectorized `OneEuroFilter` for scalars,
+individual points or a complete `(33, 3)` landmark array. The implementation
+uses the [One-Euro algorithm by Casiez, Roussel and Vogel](https://gery.casiez.net/1euro/):
+the raw-signal derivative is low-pass filtered at `d_cutoff`, then each component
+uses `cutoff = min_cutoff + beta * abs(filtered_derivative)` and
+`alpha = 1 / (1 + 1 / (2*pi*cutoff*dt))` to smooth the position.
+
+```python
+import numpy as np
+from core.filter import OneEuroFilter, BoneLengthConstraintChecker
+
+smoother = OneEuroFilter(min_cutoff=1.0, beta=0.007, d_cutoff=1.0)
+# world_pts is (33, 3); visibility_scores is a 33-element NumPy array.
+visible = (np.isfinite(visibility_scores)
+           & (visibility_scores >= 0.65) & (visibility_scores <= 1.0))
+filtered_pts = smoother(world_pts, timestamp=sample.timestamp_ns / 1e9,
+                        valid_mask=visible[:, None])
+
+checker = BoneLengthConstraintChecker(relative_tolerance=0.20)
+# Explicit calibration using a trustworthy, visibility-gated neutral frame:
+checker.calibrate(neutral_world_pts, neutral_visibility_scores)
+verdicts = checker.check(filtered_pts, visibility_scores)
+```
+
+Use capture timestamps in monotonic seconds and process each sequence once.
+Arrays keep the same shape until `reset()`. Duplicate/backward timestamps (and
+positive intervals <= 1e-12 s) hold the previous output and leave state unchanged;
+nonfinite timestamps raise `ValueError`. Missing/occluded components return NaN,
+clear their own history, and restart at their next valid observation. Pass a
+missing-frame mask to invalidate tracking, or call `reset()` after a tracking gap.
+Smoothing is independent per coordinate; `cutoff` exposes the current per-axis
+cutoffs. Call each instance serially from a single processing stream.
+
+Defaults are starting values. Lower `min_cutoff` reduces stationary jitter while
+increasing lag; increasing `beta` raises responsiveness during motion. `beta`
+depends on coordinate units: 0.007 may adapt only weakly at ordinary meter-scale
+speeds. Tests also use beta=5 for synthetic meter-scale step/ramp comparisons.
+Tune on actual motion instead of assuming that value is suitable for everyone.
+Causal smoothing reduces the jitter/lag tradeoff; it cannot guarantee zero lag.
+
+The optional checker defaults to bilateral upper arms and shins. It flags relative
+length deviations above 20% against a frozen calibration, supports custom landmark
+pairs, and returns `consistent=None` for unavailable segments. It never moves
+landmarks or learns from noisy live lengths. For a steadier baseline, calibrate
+from median coordinates across reliable stationary frames. Reset/recalibrate for
+a new subject or tracking session. Treat flags as measurement gates; they are
+consistency estimates rather than clinical anthropometric limits.
+
+No dependencies were added. These components are available for pipeline
+integration; the baseline `main.py` does not yet apply the filter or checker.
