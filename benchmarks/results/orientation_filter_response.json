@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "type": "Analytical signals, not human motion or joint-angle validation",
+  "rate_hz": 60,
+  "min_cutoff_hz": 1,
+  "d_cutoff_hz": 1,
+  "seed": 42,
+  "noise_std_m": 0.02,
+  "noise_samples": 1800,
+  "noise_warmup_samples": 300,
+  "ramp_velocity_m_per_s": 3,
+  "ramp_samples": 600,
+  "ramp_warmup_samples": 120,
+  "application_default_beta": 5,
+  "results": [
+    {
+      "beta": 0,
+      "stationary_variance_reduction_percent": 95.04114433859195,
+      "steady_ramp_coordinate_lag_ms": 159.15492052104494
+    },
+    {
+      "beta": 0.007,
+      "stationary_variance_reduction_percent": 95.03490991444036,
+      "steady_ramp_coordinate_lag_ms": 155.8814206068126
+    },
+    {
+      "beta": 5,
+      "stationary_variance_reduction_percent": 89.84201069807507,
+      "steady_ramp_coordinate_lag_ms": 9.947185353926894
+    }
+  ]
+}

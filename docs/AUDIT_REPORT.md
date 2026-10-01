@@ -1,5 +1,10 @@
 # Executive Audit Report
 
+> Historical snapshot before the orientation/validation follow-up. The current
+> application uses body-aligned torso projections and beta=5. See
+> [Completion Report](COMPLETION_REPORT.md) for the updated 100-test verification,
+> collection/reporting tools, current benchmarks and remaining physical evidence.
+
 **Date:** 1 October 2026
 
 **Repository:** `satishkumar123123/realtime-biomechanics-engine`

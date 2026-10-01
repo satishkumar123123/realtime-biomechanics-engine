@@ -6,10 +6,11 @@ MediaPipe BlazePose Full, adaptive One-Euro smoothing, neutral-zero geometry and
 a translucent OpenCV diagnostics HUD.
 
 **Submission status:** the capture, geometry, filtering, desktop integration and
-automated benchmarking are implemented. The test suite passes. A reproducible
-synthetic-input performance report is included. Detected-human webcam throughput
-and clinical accuracy have not yet been measured; the requested performance and
-MAE ranges below are explicitly labeled project targets.
+automated benchmarking are implemented, including orientation-aware torso
+projections, static reference-pair collection and accuracy reporting. The test
+suite passes. Reproducible synthetic-input reports are included. Actual
+detected-human desktop throughput and manual-reference accuracy remain unmeasured;
+no participant readings or real-camera performance results have been invented.
 
 ## System architecture
 
@@ -20,7 +21,8 @@ flowchart TD
     Mailbox --> Model["MediaPipe BlazePose Full"]
     Model --> Gate["Visibility and finite-value gating"]
     Gate --> Filter["One-Euro world-coordinate filter"]
-    Filter --> Geometry["Biomechanics angle engine"]
+    Filter --> Frame["Reliable torso frame"]
+    Frame --> Geometry["Biomechanics angle engine"]
     Geometry --> HUD["OpenCV wireframe and HUD"]
     Model --> HUD
     Mailbox --> Timing["Monotonic timing and sequence tracking"]
@@ -40,10 +42,11 @@ not lossless video recording or a guarantee of zero camera/driver frame drops.
 | Component | Responsibility |
 | --- | --- |
 | `core/capture.py` | Camera lifecycle, daemon worker, latest-frame snapshots, safe ownership |
-| `core/biomechanics.py` | Vector math, camera-plane projections, confidence-gated bilateral angles |
+| `core/biomechanics.py` | Vector math, body/camera frames, confidence-gated bilateral angles |
 | `core/filter.py` | Array-based One-Euro smoothing and optional calibrated bone-length checks |
 | `main.py` | Shared pipeline, pose inference, HUD, controls, sliding diagnostics |
 | `benchmark.py` | Synthetic/recorded/webcam runs, full-run statistics, JSON export |
+| `core/validation.py`, `validation.py` | Static paired holds, quality checks, per-joint/view accuracy reports |
 | `tests/` | Geometry, signal, lifecycle, integration and benchmark regression tests |
 | `benchmarks/results/` | Reproducible measured benchmark reports |
 
@@ -100,23 +103,49 @@ Segments with length at most `1e-7` have no defined direction and return `None`.
 Cosines are clamped to `[-1, 1]`; epsilon is used as a validity guard rather than
 adding a bias to every denominator.
 
-### Plane separation
+### Body-aligned plane separation
+
+The application and benchmark default to `--coordinate-frame body`. Four reliable
+torso anchors (both shoulders and hips) define an orthonormal frame:
+
+1. Torso-down is the normalized hip-midpoint minus shoulder-midpoint direction.
+2. Subject-left averages the normalized right-to-left shoulder and hip spans,
+   then removes its component along torso-down (Gram-Schmidt).
+3. Posterior is `cross(left, down)`. Points are expressed in this left/down/posterior
+   basis relative to the hip midpoint. Local anterior is negative Z.
+
+The frame follows modeled subject yaw, roll and pitch, so local X-Y/Y-Z represent
+estimated torso coronal/sagittal planes. Rigid-transform tests preserve angles
+through side and back rotations; they do not establish real-model yaw accuracy.
+Missing anchors, collapsed torso spans, over 60-degree disagreement between hip
+and shoulder lateral directions, or a nearly collinear lateral/down direction
+invalidate frame-dependent shoulder/hip measurements. Elbow, knee and ankle
+continue using their reliable 3D triplets. No stale frame is reused after occlusion.
 
 | Motion | Projection | Reference |
 | --- | --- | --- |
-| Shoulder abduction/adduction | Coronal X-Y: discard Z | Shoulder-to-hip ray versus shoulder-to-elbow ray |
-| Shoulder flexion/extension | Sagittal Y-Z: discard X | Shoulder-to-hip ray versus shoulder-to-elbow ray |
-| Hip flexion/extension | Sagittal Y-Z: discard X | Reverse hip-to-shoulder ray versus hip-to-knee ray |
+| Shoulder abduction/adduction | Body coronal X-Y: discard local Z | Torso-down reference versus shoulder-to-elbow ray |
+| Shoulder flexion/extension | Body sagittal Y-Z: discard local X | Shoulder-to-hip ray versus shoulder-to-elbow ray |
+| Hip flexion/extension | Body sagittal Y-Z: discard local X | Reverse hip-to-shoulder ray versus hip-to-knee ray |
+
+In body mode the coronal shoulder reference removes the diagonal ipsilateral
+hip-ray's lateral component. Otherwise ordinary differences between shoulder and
+hip widths would create an apparent abduction angle with the arm straight down.
+The shoulder/hip landmarks still define the torso frame and visibility gate;
+camera mode retains the original raw projected-triplet formula. This is a
+documented anatomical-reference correction, covered by unequal-width tests.
 
 Signed projected angles use `atan2(signed cross component, normalized dot)`.
 Nearly out-of-plane rays are rejected when projected length is below 5% of
 the 3D segment length; this heuristic guards ill-conditioned directions and
 requires real-motion tuning. The exact opposite ray is consistently reported
 as +180 degrees because its direction of rotation is geometrically ambiguous.
-The level, fixed camera and subject must be aligned so these camera planes
-approximate anatomical planes. Default signs assume anterior is -Z and
-subject-left is +X; `anterior_z_sign` and `left_x_sign` can reverse these project
-conventions. Root-relative coordinates do not create a body-aligned frame.
+The low-level engine preserves `coordinate_frame='camera'` as its compatibility
+default; the desktop explicitly selects body mode. `--coordinate-frame camera`
+retains fixed camera X-Y/Y-Z and requires front alignment. Its default signs assume
+anterior is -Z and subject-left is +X; low-level callers can reverse those signs.
+Signs in body mode follow landmark identities. Root-relative coordinates alone
+do not provide anatomical alignment; the explicit torso transform is required.
 
 A segment perpendicular to a projection plane has no projected direction. For
 example, exact 90-degree pure abduction produces `None` for sagittal shoulder
@@ -129,10 +158,30 @@ distinguish hyperextension from flexion. Ankle-to-foot-index geometry is a proxy
 for a foot segment, not the clinical ankle axis. Trunk movement also affects
 shoulder/hip reference rays.
 
+### Subject positioning and camera setup
+
+Keep one camera fixed, approximately level, far enough away to include the full
+body and feet. Use steady lighting and clothing that leaves joint locations clear.
+Face the camera for abduction; turn toward a side/oblique view for flexion and
+extension to expose the moving limb. Body mode follows this orientation change.
+An exact side view can hide the opposite torso anchors: if the HUD reports
+`Torso frame unavailable`, use a slightly oblique stance where both shoulders and
+hips remain reliable. Missing far-side measurements stay unavailable.
+
+Maintain a stable trunk during isolated joint holds and reset (`r`) after changing
+measurement setup. No multi-camera, depth sensor, known-body-scale calibration
+or automatic anatomical neutral calibration is required. The model's inferred
+world scale and torso-derived planes remain approximations; verify neutral and
+known bends against the reference assessor. Camera intrinsic/lens calibration is
+not implemented, so avoid wide-angle image edges and validate at the actual
+distance/view used. A torso frame is not a calibrated scapular or pelvic frame.
+
 ## Depth jitter and noise mitigation
 
 The vectorized One-Euro filter processes a `(33, 3)` array independently per
-coordinate. Defaults are `min_cutoff=1.0 Hz`, `beta=0.007`, `d_cutoff=1.0 Hz`.
+coordinate. Application defaults are `min_cutoff=1.0 Hz`, `beta=5.0`,
+`d_cutoff=1.0 Hz` for coordinates in meters. The reusable `OneEuroFilter` class
+retains beta=0.007 for API compatibility; app/benchmark/validation pass beta=5.
 Using timestamp intervals in seconds:
 
 ```text
@@ -145,9 +194,21 @@ filtered_position = alpha*raw_current + (1-alpha)*filtered_previous
 
 Lower `min_cutoff` suppresses static jitter at the cost of lag. Increase `beta`
 when dynamic motion is too delayed. Beta depends on units: 0.007 adapts only
-weakly at ordinary meter-scale speeds. The synthetic meter-scale step/ramp tests
-also exercise beta=5; that is a test setting, not a universally validated tuning.
+weakly at ordinary meter-scale speeds. Beta=5 is selected from analytical
+meter-scale checks, not a universally validated human-motion tuning.
 Causal smoothing reduces the jitter/lag tradeoff but does not eliminate lag.
+
+Reproduce the tuning experiment:
+
+```bash
+python benchmarks/filter_response.py --output benchmarks/results/my_filter_response.json
+```
+
+The [measured analytical report](benchmarks/results/orientation_filter_response.json)
+uses seeded 0.02 m noise and a 3 m/s ramp at 60 Hz. Beta=0.007 gives 95.03%
+stationary variance reduction and 155.88 ms equivalent steady coordinate lag;
+beta=5 gives 89.84% reduction and 9.95 ms lag. These are signal experiments,
+not observed human joint-angle errors or guarantees of zero motion lag.
 
 Visibility must be finite and **strictly greater than 0.65** for every involved landmark;
 exactly 0.65 is rejected to match the audited threshold. Missing, low-confidence or nonfinite coordinates are masked,
@@ -197,12 +258,32 @@ python -m pip install -r requirements.txt
 Use a fresh environment rather than mixing `opencv-python`, contrib and headless
 wheel variants. A desktop session and camera access are needed for the UI.
 
+### Model download and offline inference
+
+MediaPipe **0.10.21 bundles the Full landmark model** (`model_complexity=1`)
+and pose detector in its wheel. Installing `requirements.txt` installs the model;
+there is no separate asset download command or first-run cloud inference call.
+After dependencies are installed, `main.py` runs locally without network access.
+Do not change to Lite/Heavy here: the legacy API may download those assets if absent.
+
+Verify the bundled Full asset from the activated environment:
+
+```bash
+python -c "from pathlib import Path; import mediapipe as mp; p=Path(mp.__file__).parent/'modules/pose_landmark/pose_landmark_full.tflite'; print(p); assert p.is_file(), 'Reinstall requirements.txt: Full model missing'"
+```
+
+On Windows/macOS, allow camera access for the terminal/Python application. On
+Linux use a graphical desktop session and ensure the user can access the camera
+device; an OpenCV camera error should be resolved before running performance tests.
+
 ### 3. Run the desktop application
 
 ```bash
 python main.py
 python main.py --camera 0 --width 640 --height 480 --fps 60
-python main.py --beta 5
+python main.py --coordinate-frame body
+# Compatibility mode for a front-aligned subject:
+python main.py --coordinate-frame camera --beta 0.007
 ```
 
 The semi-transparent sidebar displays all twelve metrics, degree symbols,
@@ -210,6 +291,8 @@ wireframe feedback, current/mean inference time, capture-to-UI mean/P95 and
 achieved FPS. Both inference and pipeline timings include rolling mean and P95.
 Unreliable values are red `Occluded / Low Conf`; reliable inputs with
 degenerate geometry show `Undefined geometry`.
+Frame-dependent measurements show `Torso frame unavailable` when the torso basis
+cannot be trusted. The HUD title identifies body/camera mode.
 
 | Control | Action |
 | --- | --- |
@@ -235,11 +318,11 @@ python benchmark.py --output benchmarks/results/my_synthetic.json
 # Time-based run: ten measured seconds after warmup:
 python benchmark.py --seconds 10
 
-# Detected-human workload from a recorded video, resized and paced at 60 FPS:
+# Detected-human workload from a recorded video, letterboxed and paced at 60 FPS:
 python benchmark.py --source recorded --video recordings/movement.mp4 --frames 300
 
 # Target-machine webcam and desktop UI workload:
-python benchmark.py --source webcam --camera 0 --seconds 10 --display
+python benchmark.py --source webcam --camera 0 --seconds 30 --display --require-human --output benchmarks/results/webcam_desktop.json
 
 # Explicit mock inference to exercise all twelve numeric measurements:
 python benchmark.py --mock-pose --frames 300
@@ -249,9 +332,16 @@ python benchmark.py --mock-pose --frames 300
 filter parameters and `--output` are configurable; see `python benchmark.py --help`.
 Recorded files loop at EOF. Source frames are paced by host time, not recording
 exposure timestamps; decoding/resizing happens in the worker before the capture
-timestamp. Large aspect-ratio changes can distort inference and should be avoided.
+timestamp. Letterboxing preserves aspect ratio instead of stretching the person.
 A blank input is not a detected-human workload; a mock pose is not model inference.
 The report states source, model, pose coverage, hardware and timing scope.
+It also reports individual metric availability and detected-pose-only latency
+statistics, so a fast no-person detector path cannot hide landmark workload cost.
+`--require-human` saves the report and returns exit code **2** unless real local
+inference, physical webcam, visible desktop, >=10 measured seconds, >=80% pose
+coverage, >=50% frames with a valid metric, and >=30 FPS are all observed. Coverage
+and duration checks are this project's evidence policy, not extra assignment
+accuracy limits. Ordinary diagnostic runs return 0 even when those checks fail.
 
 ### 5. Execute the test suite
 
@@ -272,8 +362,11 @@ timestamp guards, camera ownership, reset/exit/disconnect behavior, real async
 capture with mock inference, real MediaPipe blank-frame inference, recorded replay
 and benchmark statistics. Tests do not require a physical webcam or GUI window.
 The real model smoke test is skipped if MediaPipe is not installed.
-After the evaluation audit, `python -m pytest -q` passed **73 tests and 56 subtests**, including
-the real MediaPipe smoke test, in this execution environment.
+Orientation regressions additionally cover side/back views, rigid transforms,
+contradictory/missing torso anchors and metric-scale filter tuning. Validation tests
+cover neutral zero, rejected/occluded holds, error formulas, schema checks and CLI
+collection/reporting. See the [current follow-up verification](docs/COMPLETION_REPORT.md)
+for the complete test count and measured evidence.
 
 ## Benchmark definitions and measured results
 
@@ -293,7 +386,7 @@ Overrun events count gaps greater than one. Startup, warmup and unconsumed tail
 frames are excluded. OpenCV does not expose reliable hardware/driver drop counts;
 those are reported as unknown, not zero.
 
-### Reproducible measured run
+### Historical reproducible measured run
 
 Command: `python benchmark.py --frames 300 --output benchmarks/results/synthetic_headless.json`.
 Report: [synthetic_headless.json](benchmarks/results/synthetic_headless.json).
@@ -320,11 +413,16 @@ of detected-human landmark tracking, filtering and valid angle computation.
 The explicit mock mode verifies that numeric path, while recorded human video
 and a target webcam are needed for representative production measurements.
 
-### Project performance targets — not measured hardware claims
+### Required target-machine performance evidence
 
-| Evaluation workload | Hardware/OS status | Resolution | Inference target | Pipeline target | FPS target |
-| --- | --- | --- | --- | --- | --- |
-| Detected-human desktop webcam | Target developer machine OS/CPU must be recorded during validation | 640x480 | ~14-18 ms mean | ~20-25 ms mean | ~45-60 |
+| Evaluation workload | Hardware/OS status | Resolution | Report separately | Required FPS |
+| --- | --- | --- | --- | --- |
+| Detected-human desktop webcam | Record actual target machine OS/CPU | 640x480 by default | Inference and pipeline mean/P95 | >=30; 60 preferred where supported |
+
+The assignment does not mandate fixed inference/pipeline milliseconds. Report
+actual results. Updated software benchmark reports are linked in
+[COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md); they remain synthetic/headless
+evidence, not proof of the required target-machine human webcam performance.
 
 Repeat three runs on the target machine with the same source, warmup, model and
 filter settings. Save JSON reports, pose coverage and mailbox counts alongside
@@ -349,9 +447,9 @@ goniometer operated by a trained assessor; it has not been conducted.
    across each joint's available range. Use at least three repeated holds per
    position and side. Sample a stable two-second software interval during each
    matched manual reading; use its median, excluding settling time.
-4. Evaluate camera-aligned poses separately from controlled rotations and
-   out-of-plane motion. Document each orientation; do not treat camera-fixed
-   shoulder/hip projections as orientation-invariant clinical measures.
+4. Evaluate frontal, side/oblique views and controlled rotations separately.
+   Document frame mode and orientation. Body-frame geometric rotation tests do
+   not establish MediaPipe's real out-of-plane landmark accuracy.
 5. Have the assessor record the manual reading without seeing the software
    estimate. A second trained assessor repeats a subset to quantify reference
    variability. Manual readings are a comparator, not error-free ground truth.
@@ -368,14 +466,55 @@ Software signs must be matched to the reference before comparison. Dynamic
 accuracy/phase lag requires a synchronized reference motion system; a static
 manual goniometer protocol cannot establish it.
 
-| Validation category | Requested MAE target | Measured project MAE | Evidence status |
-| --- | ---: | --- | --- |
-| In-plane / camera-aligned elbow and knee | ~3.5-4.5 degrees | Not measured | Manual reference study pending |
-| Out-of-plane shoulder and hip | ~6.0-7.5 degrees | Not measured | Manual reference study pending; projection alignment must be specified |
+| Required validation | Measured MAE | Evidence status |
+| --- | --- | --- |
+| Elbow flexion/extension | Not measured | Paired reference holds needed |
+| Knee flexion/extension | Not measured | Paired reference holds needed |
+| Shoulder or hip flexion/extension | Not measured | Paired reference holds in documented views needed |
 
-These ranges are assignment targets supplied for this project, not results from
-participants or claims taken from an external clinical study. Shoulder and hip
-error must be broken down by motion/view rather than hidden in one aggregate.
+The assignment explicitly has **no fixed error threshold**. Report observed
+error, coverage, procedure and limitations. Earlier illustrative 3.5-7.5-degree
+goals are not acceptance criteria or measured results and have been removed.
+
+### Collect and report actual paired measurements
+
+Use the same machine, model/filter settings and fixed camera for a study. Measure
+the joint with the assessor's goniometer first; keep the position stable while a
+separate operator starts acquisition. The assessor must not view software values.
+The `--reference` value must be the actual reading, with the documented signs;
+do not enter the desired angle or copy a software reading as ground truth.
+
+The commands below demonstrate syntax only. Replace each reference with its
+measured reading. Collect neutral plus several comfortable bends, both sides
+where reliable, and at least three repeated holds per position. Give the same
+anonymous ID to the same participant. Keep identical configuration per joint/view;
+use separate CSV studies when comparing tunings.
+
+```bash
+python validation.py collect --participant P01 --joint L_Elbow_Flex --view left-side --reference 90
+python validation.py collect --participant P01 --joint L_Knee_Flex --view left-side --reference 90
+python validation.py collect --participant P01 --joint L_Shoulder_Flex --view oblique --reference 45
+# Repeat holds and sides, replacing references with real assessor readings.
+python validation.py report
+```
+
+Each acquisition excludes one second of settling and samples a two-second hold.
+It stores the software median, coverage, interquartile spread and half-window
+median drift with the reference/configuration. Holds with <80% valid coverage,
+<5 valid frames, >3-degree spread/drift or premature exit are retained as rejected.
+These are configurable collector quality heuristics, not clinical error limits.
+
+Default outputs are `validation/data/paired_holds.csv`,
+`validation/results/accuracy.json` and `validation/results/accuracy.md`. The
+[empty CSV template](validation/template.csv) contains no fabricated records.
+Reports use one observation per hold, group by joint/view, and show MAE, signed
+bias, RMSE, maximum absolute error, reference range, sample/participant counts and
+availability. Missing required categories cause report exit code 2. Category
+presence alone does not establish adequate validation; examine ranges, repetitions,
+reference uncertainty and rejected holds. Confidence intervals/agreement plots
+are not automated; add them with suitable hold/participant sampling after data
+collection. Participant data/generated validation reports are ignored by Git;
+publish anonymized evidence explicitly after reviewing it.
 
 ## Known limitations and future work
 
@@ -384,8 +523,10 @@ error must be broken down by motion/view rather than hidden in one aggregate.
 - Loose clothing can shift visual joint estimates relative to anatomical axes.
 - Single-camera depth ambiguity and foreshortening remain despite inferred 3D
   coordinates, particularly for movement along the camera's line of sight.
-- Camera-fixed projections depend on subject orientation and trunk alignment.
-  Add a calibrated anatomical frame before claiming view-invariant measurements.
+- The torso-derived body frame depends on reliable bilateral shoulder/hip depth.
+  Side-view occlusion, axial twisting and incorrect model left/right identities can
+  invalidate it. Camera mode additionally requires front alignment. Neither mode
+  provides clinically calibrated scapular/pelvic axes or proven yaw accuracy.
 - Neutral-zero segment formulas are geometric proxies: signed hyperextension,
   axial rotation and clinical ankle axes need richer modeling/landmarks.
 - Filter tuning trades jitter against lag. Bone-length checks detect drift but
@@ -394,10 +535,9 @@ error must be broken down by motion/view rather than hidden in one aggregate.
   the camera, backend and OS. The latest-frame mailbox intentionally loses history.
 
 Next priorities are a detected-human target-machine benchmark, the paired manual
-validation dataset, subject-specific baseline calibration, optional body-aligned
-projections, filter tuning from motion sequences and migration to the MediaPipe
-Tasks API. Multi-view/depth sensing could reduce ambiguity where extra hardware
-is acceptable.
+validation dataset, subject-specific anatomical baseline calibration, filter tuning
+from measured motion sequences and migration to the MediaPipe Tasks API. All
+planned improvements for this assignment retain the one fixed monocular camera.
 
 ## References
 
@@ -414,3 +554,5 @@ none supplies clinical accuracy results for this implementation.
 See [Executive Audit Report](docs/AUDIT_REPORT.md) for the rubric compliance
 matrix, corrected defects, repeated test evidence and unresolved real-world
 validation gaps.
+The subsequent [completion report](docs/COMPLETION_REPORT.md) records orientation,
+tuning, validation tooling and benchmark evidence added after that audit.

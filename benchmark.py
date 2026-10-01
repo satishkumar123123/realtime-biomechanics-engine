@@ -19,7 +19,7 @@ from main import OpenCVDisplay, PoseProcessor, create_pose, run_pipeline
 class PacedReplay:
     """OpenCV-compatible synthetic/recorded source; decoding runs on capture thread.
 
-    Recorded files loop at EOF and resize to the requested resolution. Replay
+    Recorded files loop at EOF and letterbox to the requested resolution. Replay
     pacing uses host time, not recorded exposure timestamps. Late reads resume
     at the current time instead of bursting to catch up.
     """
@@ -57,7 +57,14 @@ class PacedReplay:
             self.loops += 1
             ok, frame = self.video.read()
         if ok and frame is not None:
-            frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+            height, width = frame.shape[:2]
+            scale = min(self.width / width, self.height / height)
+            resized_width = max(1, min(self.width, round(width * scale)))
+            resized_height = max(1, min(self.height, round(height * scale)))
+            frame = cv2.resize(frame, (resized_width, resized_height), interpolation=cv2.INTER_AREA)
+            left, top = (self.width-resized_width)//2, (self.height-resized_height)//2
+            frame = cv2.copyMakeBorder(frame, top, self.height-resized_height-top,
+                                       left, self.width-resized_width-left, cv2.BORDER_CONSTANT)
         return ok, frame
 
     def release(self):
@@ -141,6 +148,7 @@ class Recorder:
         published = int(last['sequence'] - first['sequence'])
         rolling = self.records[-120:]
         rolling_duration = rolling[-1]['completion_time'] - rolling[0]['completion_time']
+        pose_records = [r for r in self.records if r['pose_detected']]
         return {
             'measured_frames': len(self.records), 'warmup_frames': self.warmup,
             'measured_interval_seconds': duration,
@@ -149,6 +157,17 @@ class Recorder:
             'pipeline': latency_stats([r['pipeline_ms'] for r in self.records]),
             'frames_with_pose': sum(bool(r['pose_detected']) for r in self.records),
             'mean_reliable_metrics': float(np.mean([r['reliable_metrics'] for r in self.records])),
+            'pose_coverage': len(pose_records) / len(self.records),
+            'numeric_coverage': sum(r['reliable_metrics'] > 0 for r in self.records) / len(self.records),
+            'metric_coverage': {
+                key: sum(r.get('metrics', {}).get(key) is not None for r in self.records)
+                     / len(self.records)
+                for key in sorted({key for r in self.records for key in r.get('metrics', {})})},
+            'detected_pose_latency': None if not pose_records else {
+                'frames': len(pose_records),
+                'inference': latency_stats([r['inference_ms'] for r in pose_records]),
+                'pipeline': latency_stats([r['pipeline_ms'] for r in pose_records]),
+            },
             'rolling_window': {
                 'frames': len(rolling),
                 'fps': (len(rolling) - 1) / rolling_duration,
@@ -165,6 +184,27 @@ class Recorder:
                 'scope': 'Sequence gaps between first and last measured frames; excludes startup and tail',
             },
         }
+
+
+def submission_checks(report):
+    """Explicit evidence policy; blank/mock/headless runs cannot prove desktop FPS.
+
+    Ten seconds, 80% pose coverage and 50% numeric coverage are this project's
+    representative-run checks, not additional assignment accuracy thresholds.
+    Passing performance checks does not establish angle accuracy.
+    """
+    config = report['configuration']
+    checks = {
+        'real_local_model': config['inference'] == 'MediaPipe BlazePose Full',
+        'physical_webcam': config['source'] == 'webcam',
+        'desktop_display': config['display'] == 'desktop',
+        'at_least_10_seconds': report['measured_interval_seconds'] >= 10,
+        'pose_coverage_at_least_80_percent': report['pose_coverage'] >= .8,
+        'numeric_coverage_at_least_50_percent': report['numeric_coverage'] >= .5,
+        'achieved_fps_at_least_30': report['achieved_e2e_fps'] >= 30,
+    }
+    return {'passed': all(checks.values()), 'checks': checks,
+            'scope': 'Desktop performance evidence only; clinical accuracy requires paired references'}
 
 
 def hardware_info():
@@ -211,7 +251,8 @@ def run_benchmark(args):
                         seconds=args.seconds, warmup=args.warmup)
     run_pipeline(cap, pose_factory=MockPose if args.mock_pose else create_pose,
                  display=OpenCVDisplay() if args.display else HeadlessDisplay(),
-                 processor=PoseProcessor(args.min_cutoff, args.beta, args.d_cutoff),
+                 processor=PoseProcessor(args.min_cutoff, args.beta, args.d_cutoff,
+                                         args.coordinate_frame),
                  on_frame=recorder)
     report = recorder.summary()
     model_version = 'mock'
@@ -219,7 +260,7 @@ def run_benchmark(args):
         import mediapipe
         model_version = mediapipe.__version__
     report.update({
-        'schema_version': 1, 'hardware': hardware_info(),
+        'schema_version': 2, 'hardware': hardware_info(),
         'configuration': {
             'source': args.source, 'video': None if args.video is None else args.video.name,
             'input_content': 'blank' if args.source == 'synthetic' else 'user-supplied',
@@ -229,12 +270,15 @@ def run_benchmark(args):
             'requested_resolution': [args.width, args.height], 'requested_source_fps': args.fps,
             'negotiated_capture': cap.actual_settings,
             'min_cutoff': args.min_cutoff, 'beta': args.beta, 'd_cutoff': args.d_cutoff,
+            'coordinate_frame': args.coordinate_frame,
+            'replay_resize': 'preserve aspect ratio with letterboxing',
             'recorded_replay_loops': source.loops if source is not None else 0,
         },
         'timing_scope': ('Host camera/replay read completion to completed HUD rendering '
                          + ('and UI event pump' if args.display else 'with headless display sink')
                          + '; excludes sensor exposure, actual screen presentation and model initialization'),
     })
+    report['submission_performance'] = submission_checks(report)
     return report
 
 
@@ -260,6 +304,16 @@ def print_summary(report):
     for label, key in (('Inference', 'inference'), ('Pipeline', 'pipeline')):
         print(f"| {label} | {rolling[key]['mean_ms']:.3f} | {rolling[key]['p95_ms']:.3f} |")
     print(f"Frames with pose: {report['frames_with_pose']} | Mean reliable metrics: {report['mean_reliable_metrics']:.2f}/12")
+    print(f"Pose coverage: {report['pose_coverage']:.1%} | Numeric coverage: {report['numeric_coverage']:.1%}")
+    if report['detected_pose_latency'] is not None:
+        subset = report['detected_pose_latency']
+        print(f"Detected-pose subset ({subset['frames']} frames): inference mean/P95 "
+              f"{subset['inference']['mean_ms']:.2f}/{subset['inference']['p95_ms']:.2f} ms; "
+              f"pipeline mean/P95 {subset['pipeline']['mean_ms']:.2f}/{subset['pipeline']['p95_ms']:.2f} ms")
+    evidence = report['submission_performance']
+    print('Representative desktop performance checks: ' + ('PASS' if evidence['passed'] else 'NOT ESTABLISHED'))
+    if not evidence['passed']:
+        print('Unmet checks: ' + ', '.join(key for key, passed in evidence['checks'].items() if not passed))
     print(report['timing_scope'])
     if config['source'] == 'synthetic':
         print('Synthetic blank input is not a detected-human workload; mock timings are not model performance.')
@@ -278,10 +332,13 @@ def build_parser():
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--fps', type=float, default=60)
     parser.add_argument('--min-cutoff', type=float, default=1)
-    parser.add_argument('--beta', type=float, default=.007)
+    parser.add_argument('--beta', type=float, default=5.0)
     parser.add_argument('--d-cutoff', type=float, default=1)
+    parser.add_argument('--coordinate-frame', choices=('body', 'camera'), default='body')
     parser.add_argument('--display', action='store_true')
     parser.add_argument('--mock-pose', action='store_true')
+    parser.add_argument('--require-human', action='store_true',
+                        help='Exit 2 unless representative human webcam/desktop performance checks pass')
     parser.add_argument('--output', type=Path, help='Optional machine-readable JSON report')
     return parser
 
@@ -295,7 +352,7 @@ def main(argv=None):
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
             print(f'Report saved: {args.output}')
-        return 0
+        return 2 if args.require_human and not report['submission_performance']['passed'] else 0
     except KeyboardInterrupt:
         print('Benchmark interrupted; pipeline resources closed.', file=sys.stderr)
         return 130

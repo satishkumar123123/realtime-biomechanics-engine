@@ -76,8 +76,12 @@ class Diagnostics:
 class PoseProcessor:
     """Convert model outputs to visibility-gated, filtered metric coordinates."""
 
-    def __init__(self, min_cutoff=1.0, beta=0.007, d_cutoff=1.0):
+    def __init__(self, min_cutoff=1.0, beta=5.0, d_cutoff=1.0,
+                 coordinate_frame='body'):
+        if coordinate_frame not in ('body', 'camera'):
+            raise ValueError("coordinate_frame must be 'body' or 'camera'")
         self.filter = OneEuroFilter(min_cutoff, beta, d_cutoff)
+        self.coordinate_frame = coordinate_frame
         self.reset_count = 0
 
     def reset(self):
@@ -99,16 +103,21 @@ class PoseProcessor:
             self.filter.reset()  # Never bridge tracking loss with stale motion history.
             points = np.full((33, 3), np.nan)
             visibility = np.zeros(33)
-        metrics = BiomechanicsEngine.compute_joint_metrics(points, visibility)
+        metrics = BiomechanicsEngine.compute_joint_metrics(
+            points, visibility, coordinate_frame=self.coordinate_frame)
         reasons = {}
         for side, offset in (('L', 0), ('R', 1)):
             for suffix, _, indices in METRIC_ROWS:
                 key = f'{side}_{suffix}'
                 if metrics[key] is None:
                     confidence = visibility[np.array(indices) + offset]
-                    reasons[key] = ('Occluded / Low Conf' if not np.all(
-                        np.isfinite(confidence) & (confidence > 0.65) & (confidence <= 1))
-                        else 'Undefined geometry')
+                    if not np.all(np.isfinite(confidence) & (confidence > 0.65) & (confidence <= 1)):
+                        reasons[key] = 'Occluded / Low Conf'
+                    elif (self.coordinate_frame == 'body' and suffix.startswith(('Shoulder', 'Hip'))
+                          and BiomechanicsEngine.body_frame(points, visibility) is None):
+                        reasons[key] = 'Torso frame unavailable'
+                    else:
+                        reasons[key] = 'Undefined geometry'
         return metrics, reasons
 
 
@@ -148,7 +157,8 @@ class HUDRenderer:
         roi = frame[:, x:]
         background = np.full_like(roi, (22, 25, 28))
         cv2.addWeighted(roi, 0.30, background, 0.70, 0, dst=roi)
-        self._text(frame, 'BIOMECHANICS', (x + 10, 24), scale=0.52)
+        mode = diagnostics.get('coordinate_frame', '')
+        self._text(frame, f'BIOMECHANICS {mode}', (x + 10, 24), scale=0.48)
         self._text(frame, f"FPS {diagnostics['fps']:.1f} | Window {diagnostics['window_frames']}/120",
                    (x + 10, 47))
         self._text(frame, f"Inference {diagnostics['inference_current_ms']:.1f} ms",
@@ -290,7 +300,8 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
             inference_ms = (time.perf_counter() - inference_start) * 1000
             diagnostics.record_inference(inference_ms)
             metrics, reasons = processor.process(results, sample.timestamp_ns / 1e9)
-            rendered = renderer.render(frame, results, metrics, reasons, diagnostics.summary())
+            hud_stats = {**diagnostics.summary(), 'coordinate_frame': processor.coordinate_frame}
+            rendered = renderer.render(frame, results, metrics, reasons, hud_stats)
             display.submit(rendered)
             key = display.poll_key()
             completion = time.perf_counter()
@@ -302,6 +313,7 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
                     'pipeline_ms': max(0, (completion - sample.timestamp_ns / 1e9) * 1000),
                     'reliable_metrics': sum(value is not None for value in metrics.values()),
                     'pose_detected': getattr(results, 'pose_world_landmarks', None) is not None,
+                    'metrics': dict(metrics), 'reasons': dict(reasons),
             }) is False:
                 break
             if key in (ord('q'), 27):
@@ -319,14 +331,18 @@ def main(argv=None):
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--fps', type=float, default=60)
     parser.add_argument('--min-cutoff', type=float, default=1)
-    parser.add_argument('--beta', type=float, default=0.007)
+    parser.add_argument('--beta', type=float, default=5.0,
+                        help='One-Euro speed sensitivity for metric coordinates')
     parser.add_argument('--d-cutoff', type=float, default=1)
+    parser.add_argument('--coordinate-frame', choices=('body', 'camera'), default='body',
+                        help='Body mode follows torso orientation; camera mode requires front alignment')
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     try:
         capture = VideoCaptureAsync(args.camera, args.width, args.height, args.fps)
-        processor = PoseProcessor(args.min_cutoff, args.beta, args.d_cutoff)
-        LOGGER.info('Starting biomechanics. q / ESC: exit, r: reset filter.')
+        processor = PoseProcessor(args.min_cutoff, args.beta, args.d_cutoff, args.coordinate_frame)
+        LOGGER.info('Starting biomechanics (%s frame). q / ESC: exit, r: reset filter.',
+                    args.coordinate_frame)
         summary = run_pipeline(capture, processor=processor)
         LOGGER.info('Stopped cleanly: %s', summary)
         return 0

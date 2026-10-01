@@ -3,13 +3,13 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
 
 from benchmark import (MockPose, PacedReplay, Recorder, build_parser, latency_stats,
-                       main, run_benchmark)
+                       main, run_benchmark, submission_checks)
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -106,6 +106,57 @@ class BenchmarkTests(unittest.TestCase):
                                '--output', str(filename)])
             self.assertEqual(status, 0)
             self.assertEqual(json.loads(filename.read_text())['measured_frames'], 3)
+
+    def test_detected_pose_subset_and_metric_coverage(self):
+        recorder = Recorder(frames=4, warmup=0)
+        for i in range(4):
+            recorder({'sequence': i+1, 'capture_time': i*.02,
+                      'completion_time': i*.02+.01, 'inference_ms': 100 if i == 0 else 10,
+                      'pipeline_ms': 15, 'pose_detected': i > 0, 'reliable_metrics': int(i > 0),
+                      'metrics': {'L_Elbow_Flex': 0 if i > 0 else None}})
+        report = recorder.summary()
+        self.assertEqual(report['pose_coverage'], .75)
+        self.assertEqual(report['numeric_coverage'], .75)
+        self.assertEqual(report['metric_coverage']['L_Elbow_Flex'], .75)
+        self.assertEqual(report['detected_pose_latency']['inference']['mean_ms'], 10)
+
+    def test_submission_checks_require_human_desktop_evidence(self):
+        report = {'configuration': {'inference': 'MediaPipe BlazePose Full', 'source': 'webcam',
+                                    'display': 'desktop'}, 'measured_interval_seconds': 30,
+                  'pose_coverage': .95, 'numeric_coverage': .9, 'achieved_e2e_fps': 45}
+        self.assertTrue(submission_checks(report)['passed'])
+        for key, value in (('source', 'synthetic'), ('display', 'headless HUD rendering'),
+                           ('inference', 'analytic mock')):
+            altered = {**report, 'configuration': {**report['configuration'], key: value}}
+            self.assertFalse(submission_checks(altered)['passed'])
+        self.assertFalse(submission_checks({**report, 'pose_coverage': 0})['passed'])
+        self.assertFalse(submission_checks({**report, 'achieved_e2e_fps': 29})['passed'])
+
+    def test_required_human_failure_still_saves_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'mock.json'
+            with patch('benchmark.print_summary'), patch('builtins.print'):
+                status = main(['--mock-pose', '--frames', '3', '--warmup', '0',
+                               '--require-human', '--output', str(path)])
+            self.assertEqual(status, 2)
+            report = json.loads(path.read_text())
+            self.assertFalse(report['submission_performance']['passed'])
+            self.assertEqual(report['configuration']['coordinate_frame'], 'body')
+
+    def test_replay_preserves_aspect_ratio(self):
+        source = PacedReplay(640, 480, 100000)
+        video = Mock()
+        video.read.return_value = (True, np.full((160, 320, 3), 255, dtype=np.uint8))
+        source.video = video
+        try:
+            ok, frame = source.read()
+            self.assertTrue(ok)
+            self.assertEqual(frame.shape, (480, 640, 3))
+            self.assertEqual(frame[:80].max(), 0)
+            self.assertEqual(frame[80:400].min(), 255)
+            self.assertEqual(frame[400:].max(), 0)
+        finally:
+            source.release()
 
 
 if __name__ == '__main__':

@@ -4,3 +4,7 @@ __pycache__/
 
 .pytest_cache/
 .venv/
+
+# Participant data and locally generated reports are opt-in publication artifacts.
+validation/data/
+validation/results/

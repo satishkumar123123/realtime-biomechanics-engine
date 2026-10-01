@@ -1,10 +1,9 @@
 """Neutral-zero geometric joint estimates from BlazePose world landmarks.
 
-Camera planes are X-Y (coronal) and Y-Z (sagittal), not automatically anatomical
-planes. The subject must face the fixed, level camera for these projections.
-Signed motion assumes anterior is -Z and subject-left is +X; callers can reverse
-those signs for a different coordinate setup. Estimates are not clinical ROM
-measurements: trunk motion, camera orientation and landmark error affect them.
+Body-frame mode constructs orthonormal left/down/posterior axes from the torso;
+its X-Y and Y-Z projections follow subject orientation. Camera-frame mode retains
+fixed X-Y/Y-Z planes and requires a front-aligned subject. Both are geometric
+proxies: inferred depth, trunk motion and landmark error affect clinical accuracy.
 """
 
 from typing import Optional
@@ -19,6 +18,56 @@ class BiomechanicsEngine:
     VISIBILITY_THRESHOLD = 0.65
     # Reject directions close to a plane normal, where tiny noise dominates angle.
     MIN_PROJECTION_RATIO = 0.05
+    FRAME_LANDMARKS = (11, 12, 23, 24)
+
+    @classmethod
+    def visibility_reliable(cls, visibilities, indices):
+        """All requested confidence values must be finite and in (0.65, 1]."""
+        for index in indices:
+            try:
+                confidence = float(visibilities[index])
+            except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+                return False
+            if not np.isfinite(confidence) or not cls.VISIBILITY_THRESHOLD < confidence <= 1:
+                return False
+        return True
+
+    @classmethod
+    def body_frame(cls, world_landmarks, visibilities):
+        """Return (hip midpoint, basis) or None for an unreliable torso.
+
+        Basis columns are subject-left, torso-down and posterior. Down follows
+        hip midpoint minus shoulder midpoint. A Gram-Schmidt lateral axis uses
+        both bilateral spans; cross(left, down) defines posterior. Landmark
+        identities determine signs, without camera-facing/yaw assumptions.
+        Four visible torso anchors are required. Contradictory spans and nearly
+        collinear torso/lateral directions are rejected instead of inventing axes.
+        This frame estimates torso orientation, not clinical pelvic/scapular axes.
+        """
+        points = np.asarray(world_landmarks, dtype=np.float64)
+        if points.shape != (33, 3):
+            raise ValueError('world_landmarks must have shape (33, 3)')
+        if (not cls.visibility_reliable(visibilities, cls.FRAME_LANDMARKS)
+                or not np.all(np.isfinite(points[list(cls.FRAME_LANDMARKS)]))):
+            return None
+        with np.errstate(over='ignore', invalid='ignore'):
+            shoulder_mid = points[11] / 2 + points[12] / 2
+            hip_mid = points[23] / 2 + points[24] / 2
+            shoulder_left = cls.normalize(points[11] - points[12])
+            hip_left = cls.normalize(points[23] - points[24])
+            down = cls.normalize(hip_mid - shoulder_mid)
+        if shoulder_left is None or hip_left is None or down is None:
+            return None
+        # >60-degree disagreement suggests twisted/incorrect torso estimates.
+        if cls.normalized_dot_product(shoulder_left, hip_left) < 0.5:
+            return None
+        lateral = cls.normalize(shoulder_left + hip_left)
+        orthogonal = lateral - np.dot(lateral, down) * down
+        if cls.euclidean_norm(orthogonal) < 0.2:
+            return None
+        left = cls.normalize(orthogonal)
+        posterior = cls.normalize(cls.cross_product(left, down))
+        return hip_mid, np.column_stack((left, down, posterior))
 
     @staticmethod
     def _vector(value):
@@ -114,7 +163,8 @@ class BiomechanicsEngine:
 
     @classmethod
     def compute_joint_metrics(cls, world_landmarks, visibilities, *,
-                              anterior_z_sign=-1, left_x_sign=1):
+                              anterior_z_sign=-1, left_x_sign=1,
+                              coordinate_frame='camera'):
         """Return 12 bilateral neutral-zero angles, or None per invalid joint.
 
         Inputs: numeric (33, 3) world coordinates in meters and a visibility
@@ -129,24 +179,34 @@ class BiomechanicsEngine:
         outward, negative across the trunk (adduction). Ankle is interior - 90:
         positive plantarflexion, negative dorsiflexion. Knee-ankle-foot-index is
         a geometric proxy and does not locate the clinical ankle axes.
+        In body mode, shoulder/hip projections require four reliable torso
+        anchors; elbow/knee/ankle remain independent of that frame. Coordinate
+        signs apply only to camera mode; body signs follow landmark identities.
+        Body-mode shoulder abduction uses torso-down as its coronal reference;
+        a diagonal ipsilateral hip ray would introduce a neutral offset solely
+        from differing shoulder and hip widths.
         """
         points = np.asarray(world_landmarks, dtype=np.float64)
         if points.shape != (33, 3):
             raise ValueError("world_landmarks must have shape (33, 3)")
         if anterior_z_sign not in (-1, 1) or left_x_sign not in (-1, 1):
             raise ValueError("Coordinate signs must be -1 or +1")
+        if coordinate_frame not in ('camera', 'body'):
+            raise ValueError("coordinate_frame must be 'camera' or 'body'")
+        projected_points = points
+        if coordinate_frame == 'body':
+            frame = cls.body_frame(points, visibilities)
+            projected_points = None
+            if frame is not None:
+                origin, basis = frame
+                with np.errstate(over='ignore', invalid='ignore'):
+                    projected_points = (points - origin) @ basis
+            anterior_z_sign, left_x_sign = -1, 1
 
         def reliable(indices):
             if not np.all(np.isfinite(points[list(indices)])):
                 return False
-            for index in indices:
-                try:
-                    confidence = float(visibilities[index])
-                except (KeyError, IndexError, TypeError, ValueError, OverflowError):
-                    return False
-                if not np.isfinite(confidence) or not cls.VISIBILITY_THRESHOLD < confidence <= 1:
-                    return False
-            return True
+            return cls.visibility_reliable(visibilities, indices)
 
         metrics = {}
         for side, shoulder, elbow, wrist, hip, knee, ankle, foot, outward in (
@@ -169,15 +229,22 @@ class BiomechanicsEngine:
                         if interior is not None:
                             value = (interior - 90.0 if name == 'Ankle_Dorsi_Plantar'
                                      else 180.0 - interior)
+                    elif projected_points is None:
+                        value = None
                     elif name == 'Hip_Flex':
+                        a, b, c = projected_points[list(indices)]
                         # Reverse the trunk ray: downwards is neutral thigh direction.
                         with np.errstate(over='ignore', invalid='ignore'):
                             value = cls._signed_projected_angle(b - a, c - b,
                                                                'sagittal', anterior_z_sign)
                     else:
+                        a, b, c = projected_points[list(indices)]
                         with np.errstate(over='ignore', invalid='ignore'):
+                            reference = a - b
+                            if coordinate_frame == 'body' and name == 'Shoulder_Abd':
+                                reference = np.array((0.0, reference[1], 0.0))
                             value = cls._signed_projected_angle(
-                                a - b, c - b,
+                                reference, c - b,
                                 'coronal' if name == 'Shoulder_Abd' else 'sagittal',
                                 -outward if name == 'Shoulder_Abd' else anterior_z_sign)
                 metrics[f'{side}_{name}'] = value
