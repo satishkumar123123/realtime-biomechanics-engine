@@ -109,6 +109,10 @@ adding a bias to every denominator.
 | Hip flexion/extension | Sagittal Y-Z: discard X | Reverse hip-to-shoulder ray versus hip-to-knee ray |
 
 Signed projected angles use `atan2(signed cross component, normalized dot)`.
+Nearly out-of-plane rays are rejected when projected length is below 5% of
+the 3D segment length; this heuristic guards ill-conditioned directions and
+requires real-motion tuning. The exact opposite ray is consistently reported
+as +180 degrees because its direction of rotation is geometrically ambiguous.
 The level, fixed camera and subject must be aligned so these camera planes
 approximate anatomical planes. Default signs assume anterior is -Z and
 subject-left is +X; `anterior_z_sign` and `left_x_sign` can reverse these project
@@ -116,7 +120,11 @@ conventions. Root-relative coordinates do not create a body-aligned frame.
 
 A segment perpendicular to a projection plane has no projected direction. For
 example, exact 90-degree pure abduction produces `None` for sagittal shoulder
-flexion; it does not imply a measured zero. Elbow/knee triplet geometry cannot
+flexion; it does not imply a measured zero. The audit reference ranges (elbow 0-150 degrees and knee 0-135 degrees) are
+covered by endpoint tests. The engine preserves geometric results up to 180
+degrees rather than clipping to those references; normal ROM varies by
+population and a nominal maximum is not a calibrated measurement limit.
+Elbow/knee triplet geometry cannot
 distinguish hyperextension from flexion. Ankle-to-foot-index geometry is a proxy
 for a foot segment, not the clinical ankle axis. Trunk movement also affects
 shoulder/hip reference rays.
@@ -141,11 +149,12 @@ weakly at ordinary meter-scale speeds. The synthetic meter-scale step/ramp tests
 also exercise beta=5; that is a test setting, not a universally validated tuning.
 Causal smoothing reduces the jitter/lag tradeoff but does not eliminate lag.
 
-Visibility must be finite and **at least 0.65** for every involved landmark;
-exactly 0.65 passes. Missing, low-confidence or nonfinite coordinates are masked,
+Visibility must be finite and **strictly greater than 0.65** for every involved landmark;
+exactly 0.65 is rejected to match the audited threshold. Missing, low-confidence or nonfinite coordinates are masked,
 never extrapolated into a valid angle. Invalid filter components return NaN and
 restart at their next valid observation. Pose loss and the `r` key reset history.
-Duplicate/backward timestamps hold the previous output without changing state;
+Duplicate/backward timestamps hold valid components; invalid components still
+clear history and return NaN;
 positive intervals at most `1e-12 s` are also guarded. Reset after a tracking gap
 when missing observations were not passed to the filter.
 
@@ -198,7 +207,8 @@ python main.py --beta 5
 
 The semi-transparent sidebar displays all twelve metrics, degree symbols,
 wireframe feedback, current/mean inference time, capture-to-UI mean/P95 and
-achieved FPS. Unreliable values are red `Occluded / Low Conf`; reliable inputs with
+achieved FPS. Both inference and pipeline timings include rolling mean and P95.
+Unreliable values are red `Occluded / Low Conf`; reliable inputs with
 degenerate geometry show `Undefined geometry`.
 
 | Control | Action |
@@ -207,7 +217,8 @@ degenerate geometry show `Undefined geometry`.
 | `r` | Reset filter history |
 | Window close | Exit cleanly |
 
-Camera stalls/disconnections produce a readable error and close owned resources.
+Camera stalls/disconnections produce a readable error and attempt owned-resource
+cleanup. Backend release failures are surfaced as OSError rather than hidden.
 If a native driver read never returns, `stop()` raises a bounded `TimeoutError`;
 Python cannot safely force-cancel every camera backend's read. The daemon releases
 the camera once that call returns. Camera settings are requests, not promises.
@@ -261,7 +272,7 @@ timestamp guards, camera ownership, reset/exit/disconnect behavior, real async
 capture with mock inference, real MediaPipe blank-frame inference, recorded replay
 and benchmark statistics. Tests do not require a physical webcam or GUI window.
 The real model smoke test is skipped if MediaPipe is not installed.
-At submission, `python -m pytest -q` passed **60 tests and 56 subtests**, including
+After the evaluation audit, `python -m pytest -q` passed **73 tests and 56 subtests**, including
 the real MediaPipe smoke test, in this execution environment.
 
 ## Benchmark definitions and measured results
@@ -273,6 +284,8 @@ completion and ends after HUD rendering plus the display sink/event pump.
 Headless mode excludes OS window presentation cost. Neither mode measures sensor
 exposure time or actual screen photons. The desktop HUD uses sliding 120-frame
 windows; benchmark mean/min/max/P95 use every post-warmup measured frame.
+The benchmark also prints/exports the final 120 measured-frame rolling window,
+excluding warmup even when fewer than 120 measurements are available.
 
 Mailbox overruns are sequence gaps between the first and last measured frames:
 `superseded = (last_sequence - first_sequence) - (measured_frames - 1)`.
@@ -395,3 +408,9 @@ is acceptable.
 
 The external references explain model/filter behavior and measurement context;
 none supplies clinical accuracy results for this implementation.
+
+## Evaluation audit
+
+See [Executive Audit Report](docs/AUDIT_REPORT.md) for the rubric compliance
+matrix, corrected defects, repeated test evidence and unresolved real-world
+validation gaps.

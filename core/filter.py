@@ -22,8 +22,9 @@ class OneEuroFilter:
 
     Invalid components (NaN, infinity, or valid_mask=False) return NaN and clear
     that component's history. Its next valid observation starts without a stale
-    derivative. A repeated/backward timestamp returns the previous output without
-    changing state. Missing samples must still reach this filter to clear history,
+    derivative. Repeated/backward timestamps hold valid components; invalid
+    components still clear history and return NaN. Missing samples must reach
+    this filter to clear history,
     or callers should reset it after a tracking gap.
     """
 
@@ -87,6 +88,12 @@ class OneEuroFilter:
             if not math.isfinite(dt):
                 raise ValueError("Timestamp interval is not finite")
             if dt <= self.MIN_DT:
+                # Time errors must not turn current occlusion/NaNs into stale poses.
+                self._initialized &= valid
+                self._raw = np.where(valid, self._raw, 0.0)
+                self._filtered = np.where(valid, self._filtered, np.nan)
+                self._derivative = np.where(valid, self._derivative, 0.0)
+                self._cutoff = np.where(valid, self._cutoff, np.nan)
                 return self._filtered.copy()
         else:
             dt = None
@@ -190,7 +197,7 @@ class BoneLengthConstraintChecker:
                     confidence = float(visibilities[index])
                 except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                     return None
-                if not np.isfinite(confidence) or not self.visibility_threshold <= confidence <= 1:
+                if not np.isfinite(confidence) or not self.visibility_threshold < confidence <= 1:
                     return None
         if not np.all(np.isfinite(points[list(pair)])):
             return None

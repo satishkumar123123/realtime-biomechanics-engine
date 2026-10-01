@@ -3,6 +3,8 @@ import argparse
 from collections import deque
 from contextlib import ExitStack
 import logging
+import os
+import sys
 import time
 
 import cv2
@@ -64,6 +66,7 @@ class Diagnostics:
         return {
             'inference_current_ms': self.inference[-1] if self.inference else 0.0,
             'inference_mean_ms': float(np.mean(self.inference)) if self.inference else 0.0,
+            'inference_p95_ms': float(np.percentile(self.inference, 95)) if self.inference else 0.0,
             'pipeline_mean_ms': float(np.mean(self.pipeline)) if self.pipeline else 0.0,
             'pipeline_p95_ms': float(np.percentile(self.pipeline, 95)) if self.pipeline else 0.0,
             'fps': fps, 'window_frames': len(self.pipeline),
@@ -89,7 +92,8 @@ class PoseProcessor:
         if valid_pose:
             points = np.array([(p.x, p.y, p.z) for p in world.landmark], dtype=float)
             visibility = np.array([p.visibility for p in image.landmark], dtype=float)
-            visible = (np.isfinite(visibility) & (visibility >= 0.65) & (visibility <= 1))
+            visible = (np.isfinite(visibility) & (visibility > 0.65) & (visibility <= 1)
+                       & np.all(np.isfinite(points), axis=1))
             points = self.filter(points, timestamp, valid_mask=visible[:, None])
         else:
             self.filter.reset()  # Never bridge tracking loss with stale motion history.
@@ -103,7 +107,7 @@ class PoseProcessor:
                 if metrics[key] is None:
                     confidence = visibility[np.array(indices) + offset]
                     reasons[key] = ('Occluded / Low Conf' if not np.all(
-                        np.isfinite(confidence) & (confidence >= 0.65) & (confidence <= 1))
+                        np.isfinite(confidence) & (confidence > 0.65) & (confidence <= 1))
                         else 'Undefined geometry')
         return metrics, reasons
 
@@ -123,7 +127,7 @@ class HUDRenderer:
             pixels = {}
             for i, point in enumerate(landmarks.landmark):
                 if (np.isfinite([point.x, point.y, point.visibility]).all()
-                        and 0.65 <= point.visibility <= 1
+                        and 0.65 < point.visibility <= 1
                         and 0 <= point.x <= 1 and 0 <= point.y <= 1):
                     pixels[i] = (min(width - 1, int(point.x * width)),
                                  min(height - 1, int(point.y * height)))
@@ -149,8 +153,8 @@ class HUDRenderer:
                    (x + 10, 47))
         self._text(frame, f"Inference {diagnostics['inference_current_ms']:.1f} ms",
                    (x + 10, 68))
-        self._text(frame, f"Inference mean {diagnostics['inference_mean_ms']:.1f} ms",
-                   (x + 10, 89))
+        self._text(frame, f"Infer mean/P95 {diagnostics['inference_mean_ms']:.1f} / "
+                   f"{diagnostics['inference_p95_ms']:.1f} ms", (x + 10, 89), scale=0.39)
         self._text(frame, f"Capture->UI mean {diagnostics['pipeline_mean_ms']:.1f} ms",
                    (x + 10, 110))
         self._text(frame, f"Capture->UI P95 {diagnostics['pipeline_p95_ms']:.1f} ms",
@@ -183,6 +187,9 @@ class OpenCVDisplay:
 
     def submit(self, frame):
         if not self._opened:
+            if sys.platform.startswith('linux') and not (os.environ.get('DISPLAY')
+                                                        or os.environ.get('WAYLAND_DISPLAY')):
+                raise RuntimeError('No desktop display; use benchmark.py in headless mode')
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
             self._opened = True
         cv2.imshow(WINDOW, frame)
@@ -191,8 +198,11 @@ class OpenCVDisplay:
         if not self._opened:
             return -1
         key = cv2.waitKey(1)
-        if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
-            return 27
+        try:
+            if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                return 27
+        except cv2.error:
+            return 27  # Some HighGUI backends destroy the window before this query.
         return key & 0xFF if key >= 0 else -1
 
     def close(self):

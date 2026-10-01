@@ -32,6 +32,19 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIsNone(report['mailbox']['hardware_dropped_frames'])
         self.assertAlmostEqual(report['inference']['mean_ms'], 3.5)
         self.assertAlmostEqual(report['inference']['p95_ms'], np.percentile([2, 3, 4, 5], 95))
+        self.assertEqual(report['rolling_window']['frames'], 4)
+        self.assertAlmostEqual(report['rolling_window']['fps'], 50)
+
+    def test_rolling_statistics_exclude_old_frames_and_warmup(self):
+        recorder = Recorder(frames=130, warmup=2)
+        for i in range(132):
+            recorder({'sequence': i+1, 'capture_time': i/60,
+                      'completion_time': i/60+.01, 'inference_ms': i,
+                      'pipeline_ms': 10, 'pose_detected': False, 'reliable_metrics': 0})
+        rolling = recorder.summary()['rolling_window']
+        self.assertEqual(rolling['frames'], 120)
+        self.assertAlmostEqual(rolling['inference']['mean_ms'], np.mean(np.arange(12, 132)))
+        self.assertAlmostEqual(rolling['inference']['p95_ms'], np.percentile(np.arange(12, 132), 95))
 
     def test_latency_statistics_and_insufficient_data(self):
         self.assertEqual(latency_stats([1, 2, 3])['min_ms'], 1)

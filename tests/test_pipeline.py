@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from core.capture import FrameSnapshot, VideoCaptureAsync
-from main import (CameraUnavailable, Diagnostics, HUDRenderer, PoseProcessor,
+from main import (CameraUnavailable, Diagnostics, HUDRenderer, OpenCVDisplay, PoseProcessor,
                   create_pose, run_pipeline)
 from tests.test_biomechanics import neutral_pose
 
@@ -126,6 +126,19 @@ class PipelineTests(unittest.TestCase):
         metrics, _ = processor.process(pose_result(), 0.3)
         self.assertTrue(all(abs(value) < 0.5 for value in metrics.values()))
 
+    def test_threshold_and_nonfinite_keypoint_recovery(self):
+        processor = PoseProcessor()
+        metrics, _ = processor.process(pose_result(.65), 0)
+        self.assertTrue(all(value is None for value in metrics.values()))
+        results = pose_result()
+        processor.process(results, .1)
+        results.pose_world_landmarks.landmark[15].z = np.nan
+        metrics, _ = processor.process(results, .2)
+        self.assertIsNone(metrics['L_Elbow_Flex'])
+        self.assertTrue(np.isnan(processor.filter._filtered[15]).all())
+        metrics, _ = processor.process(pose_result(), .3)
+        self.assertAlmostEqual(metrics['L_Elbow_Flex'], 0, delta=.01)
+
     def test_reset_and_exit_controls(self):
         for key in (ord('q'), 27):
             with self.subTest(key=key):
@@ -209,9 +222,29 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(stats['window_frames'], 120)
         self.assertAlmostEqual(stats['inference_current_ms'], 129)
         self.assertAlmostEqual(stats['inference_mean_ms'], np.mean(np.arange(10, 130)))
+        self.assertAlmostEqual(stats['inference_p95_ms'], np.percentile(np.arange(10, 130), 95))
         self.assertAlmostEqual(stats['pipeline_mean_ms'], 10)
         self.assertAlmostEqual(stats['pipeline_p95_ms'], 10)
         self.assertAlmostEqual(stats['fps'], 60)
+
+    def test_closed_native_window_is_a_clean_exit_key(self):
+        display = OpenCVDisplay()
+        display._opened = True
+        with patch('main.cv2.waitKey', return_value=-1), patch(
+                'main.cv2.getWindowProperty', side_effect=cv2.error('Window destroyed')):
+            self.assertEqual(display.poll_key(), 27)
+        with patch('main.cv2.destroyWindow') as destroy:
+            display.close()
+            display.close()
+            destroy.assert_called_once()
+
+    def test_linux_without_display_does_not_enter_native_gui(self):
+        display = OpenCVDisplay()
+        with patch('main.sys.platform', 'linux'), patch.dict('main.os.environ', {}, clear=True), patch(
+                'main.cv2.namedWindow') as create:
+            with self.assertRaises(RuntimeError):
+                display.submit(np.zeros((480, 640, 3), dtype=np.uint8))
+            create.assert_not_called()
 
     def test_small_frame_hud_has_space_for_all_rows(self):
         renderer = HUDRenderer()

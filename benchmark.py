@@ -139,6 +139,8 @@ class Recorder:
             raise ValueError('Benchmark timestamps/sequences must increase')
         superseded = int(np.sum(deltas - 1))
         published = int(last['sequence'] - first['sequence'])
+        rolling = self.records[-120:]
+        rolling_duration = rolling[-1]['completion_time'] - rolling[0]['completion_time']
         return {
             'measured_frames': len(self.records), 'warmup_frames': self.warmup,
             'measured_interval_seconds': duration,
@@ -147,6 +149,12 @@ class Recorder:
             'pipeline': latency_stats([r['pipeline_ms'] for r in self.records]),
             'frames_with_pose': sum(bool(r['pose_detected']) for r in self.records),
             'mean_reliable_metrics': float(np.mean([r['reliable_metrics'] for r in self.records])),
+            'rolling_window': {
+                'frames': len(rolling),
+                'fps': (len(rolling) - 1) / rolling_duration,
+                'inference': latency_stats([r['inference_ms'] for r in rolling]),
+                'pipeline': latency_stats([r['pipeline_ms'] for r in rolling]),
+            },
             'mailbox': {
                 'published_intervals': published,
                 'consumed_intervals': len(self.records) - 1,
@@ -245,6 +253,12 @@ def print_summary(report):
     print(f"\nMailbox superseded: {mailbox['superseded_frames']} ({mailbox['superseded_percent']:.2f}%)"
           f" | Overrun events: {mailbox['overrun_events']}")
     print('Hardware/driver frame drops: unknown (not exposed by OpenCV).')
+    rolling = report['rolling_window']
+    print(f"Final {rolling['frames']}-frame window: FPS {rolling['fps']:.2f}")
+    print('| Rolling latency | Mean (ms) | P95 (ms) |')
+    print('| --- | ---: | ---: |')
+    for label, key in (('Inference', 'inference'), ('Pipeline', 'pipeline')):
+        print(f"| {label} | {rolling[key]['mean_ms']:.3f} | {rolling[key]['p95_ms']:.3f} |")
     print(f"Frames with pose: {report['frames_with_pose']} | Mean reliable metrics: {report['mean_reliable_metrics']:.2f}/12")
     print(report['timing_scope'])
     if config['source'] == 'synthetic':

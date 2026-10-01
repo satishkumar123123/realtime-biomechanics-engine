@@ -47,6 +47,7 @@ class VideoCaptureAsync:
         self._sequence = 0
         self._running = False
         self._error = None
+        self._cleanup_error = None
         self.actual_settings = {}
 
     @property
@@ -91,16 +92,24 @@ class VideoCaptureAsync:
                 with self._condition:
                     self._latest = None
                     self._error = None
+                    self._cleanup_error = None
                     self._running = True
                 self._thread = threading.Thread(
                     target=self._capture, args=(cap,), name="camera-capture",
                     daemon=True)
                 self._thread.start()
             except BaseException:
-                cap.release()
-                with self._condition:
-                    self._running = False
-                    self._condition.notify_all()
+                # A failed Thread.start() leaves an unstarted Thread: never join it.
+                self._thread = None
+                try:
+                    cap.release()
+                except Exception as exc:
+                    self._cleanup_error = exc
+                finally:
+                    with self._condition:
+                        self._running = False
+                        self._latest = None
+                        self._condition.notify_all()
                 raise
         return self
 
@@ -129,6 +138,12 @@ class VideoCaptureAsync:
         finally:
             try:
                 cap.release()
+            except Exception as exc:
+                # Surface cleanup failure instead of an unhandled daemon exception.
+                with self._condition:
+                    self._cleanup_error = exc
+                    if self._error is None:
+                        self._error = exc
             finally:
                 with self._condition:
                     self._running = False
@@ -159,6 +174,10 @@ class VideoCaptureAsync:
 
     def wait_for_frame(self, after_sequence=0, timeout=1.0, *, copy=True):
         """Wait for a newer frame; return None on timeout, failure, or stop."""
+        if not isinstance(after_sequence, int) or after_sequence < 0:
+            raise ValueError("after_sequence must be a nonnegative integer")
+        if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("timeout must be None or finite and nonnegative")
         with self._condition:
             ready = self._condition.wait_for(
                 lambda: (self._latest is not None
@@ -175,6 +194,7 @@ class VideoCaptureAsync:
         Raises TimeoutError if a native driver read remains blocked. Python cannot
         safely cancel that read; do not release the device from another thread.
         Once the read returns the worker releases it; a later stop can join it.
+        Backend release failure raises OSError and cannot guarantee device cleanup.
         """
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("Stop timeout must be finite and nonnegative")
@@ -188,6 +208,8 @@ class VideoCaptureAsync:
                 if self._thread.is_alive():
                     raise TimeoutError("Camera driver did not return before shutdown timeout")
                 self._thread = None
+            if self._cleanup_error is not None:
+                raise OSError("Camera backend failed to release resources") from self._cleanup_error
 
     def __enter__(self):
         return self.start()

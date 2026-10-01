@@ -111,6 +111,14 @@ class OneEuroTests(unittest.TestCase):
         self.assertTrue(np.all(np.isnan(output[15])))
         np.testing.assert_array_equal(output[14], [1, 1, 1])
 
+    def test_invalid_data_on_duplicate_timestamp_never_returns_stale_pose(self):
+        smoother = OneEuroFilter()
+        smoother([1, 2], 1)
+        output = smoother([np.nan, 2], 1)
+        self.assertTrue(np.isnan(output[0]))
+        self.assertEqual(output[1], 2)
+        np.testing.assert_array_equal(smoother([5, 2], 1.1), [5, 2])
+
     def test_input_and_output_ownership(self):
         smoother = OneEuroFilter()
         sample = np.array([1.0, 2.0])
@@ -159,7 +167,7 @@ class BoneLengthTests(unittest.TestCase):
             self.assertAlmostEqual(result.relative_deviation, 0.5)
 
     def test_occlusion_and_nonfinite_geometry_are_unavailable(self):
-        self.visibility[13] = 0.64
+        self.visibility[13] = 0.65
         self.assertIsNone(self.checker.check(self.points, self.visibility)['L_UpperArm'].consistent)
         self.points[27] = np.nan
         self.assertIsNone(self.checker.check(self.points)['L_Shin'].consistent)

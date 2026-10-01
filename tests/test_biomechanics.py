@@ -100,6 +100,8 @@ class BiomechanicsTests(unittest.TestCase):
                         self.visibility[index] = 0.649
                         self.assertIsNone(self.metrics()[f'{side}_{joint}'])
                         self.visibility[index] = 0.65
+                        self.assertIsNone(self.metrics()[f'{side}_{joint}'])
+                        self.visibility[index] = 0.65001
                         self.assertIsNotNone(self.metrics()[f'{side}_{joint}'])
                         self.visibility[index] = 1
 
@@ -156,6 +158,39 @@ class BiomechanicsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.metrics(anterior_z_sign=0)
         self.assertEqual(self.metrics(), Engine.compute_joint_metrics(self.points, [1] * 33))
+
+    def test_nearly_normal_projections_are_rejected(self):
+        for side, shoulder, elbow, _, hip, knee, _, _, outward in SIDES:
+            self.points[elbow] = self.points[shoulder] + (0.3 * outward, 0.001, 0.001)
+            self.assertIsNone(self.metrics()[f'{side}_Shoulder_Flex'])
+            self.points[elbow] = self.points[shoulder] + (0.001, 0.001, -0.3)
+            self.assertIsNone(self.metrics()[f'{side}_Shoulder_Abd'])
+            self.points[knee] = self.points[hip] + (0.5, 0.001, 0.001)
+            self.assertIsNone(self.metrics()[f'{side}_Hip_Flex'])
+
+    def test_antiparallel_shoulder_ray_uses_positive_180_tie(self):
+        for side, shoulder, elbow, _, _, _, _, _, _ in SIDES:
+            self.points[elbow] = self.points[shoulder] + (0, -0.3, 0)
+            metrics = self.metrics()
+            self.assertAlmostEqual(metrics[f'{side}_Shoulder_Flex'], 180)
+            self.assertAlmostEqual(metrics[f'{side}_Shoulder_Abd'], 180)
+
+    def test_reference_rom_endpoints_and_unclipped_geometry(self):
+        for side, _, elbow, wrist, _, knee, ankle, _, _ in SIDES:
+            for flexion in (0, 90, 135, 150, 170):
+                angle = np.radians(flexion)
+                self.points[wrist] = self.points[elbow] + (0, .3*np.cos(angle), -.3*np.sin(angle))
+                self.points[ankle] = self.points[knee] + (0, .5*np.cos(angle), -.5*np.sin(angle))
+                metrics = self.metrics()
+                self.assertAlmostEqual(metrics[f'{side}_Elbow_Flex'], flexion, delta=.01)
+                self.assertAlmostEqual(metrics[f'{side}_Knee_Flex'], flexion, delta=.01)
+
+    def test_overflowing_finite_coordinates_return_none_without_warning(self):
+        self.points[11] = (1e308, 0, 0)
+        self.points[13] = (-1e308, 0, 0)
+        with np.errstate(all='raise'):
+            self.assertIsNone(self.metrics()['L_Elbow_Flex'])
+            self.assertIsNone(self.metrics()['L_Shoulder_Flex'])
 
 
 if __name__ == '__main__':

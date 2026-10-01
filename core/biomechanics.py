@@ -17,6 +17,8 @@ class BiomechanicsEngine:
 
     EPSILON = 1e-7
     VISIBILITY_THRESHOLD = 0.65
+    # Reject directions close to a plane normal, where tiny noise dominates angle.
+    MIN_PROJECTION_RATIO = 0.05
 
     @staticmethod
     def _vector(value):
@@ -79,22 +81,34 @@ class BiomechanicsEngine:
     @classmethod
     def calculate_angle_3d(cls, a, b, c) -> Optional[float]:
         """Interior angle at b in [0, 180]; None for invalid/zero segments."""
-        cosine = cls.normalized_dot_product(cls._vector(a) - cls._vector(b),
-                                            cls._vector(c) - cls._vector(b))
+        with np.errstate(over='ignore', invalid='ignore'):
+            cosine = cls.normalized_dot_product(cls._vector(a) - cls._vector(b),
+                                                cls._vector(c) - cls._vector(b))
         return None if cosine is None else float(np.degrees(np.arccos(cosine)))
 
     @classmethod
     def _signed_projected_angle(cls, reference, moving, plane, sign):
         """Oriented angle after projection, using unit-vector dot and cross."""
         project = cls.project_coronal if plane == 'coronal' else cls.project_sagittal
-        reference = cls.normalize(project(reference))
-        moving = cls.normalize(project(moving))
+        projected = []
+        for vector in (reference, moving):
+            length = cls.euclidean_norm(vector)
+            in_plane = project(vector)
+            in_plane_length = cls.euclidean_norm(in_plane)
+            if (length is None or in_plane_length is None or length <= cls.EPSILON
+                    or in_plane_length / length < cls.MIN_PROJECTION_RATIO):
+                return None
+            projected.append(cls.normalize(in_plane))
+        reference, moving = projected
         if reference is None or moving is None:
             return None
         cosine = cls.normalized_dot_product(reference, moving)
         cross = cls.cross_product(reference, moving)
         normal_axis = 2 if plane == 'coronal' else 0
         sine = float(np.clip(sign * cross[normal_axis], -1.0, 1.0))
+        # The opposite ray has no directional sign; avoid signed-zero -180 ties.
+        if cosine < 0 and abs(sine) <= cls.EPSILON:
+            return 180.0
         angle = float(np.degrees(np.arctan2(sine, cosine)))
         return 0.0 if abs(angle) < cls.EPSILON else angle
 
@@ -105,7 +119,7 @@ class BiomechanicsEngine:
 
         Inputs: numeric (33, 3) world coordinates in meters and a visibility
         mapping or 33-element sequence. Missing/nonfinite visibility is rejected;
-        every triplet landmark must have confidence in [0.65, 1]. Nonfinite or
+        every triplet landmark must have confidence in (0.65, 1]. Nonfinite or
         coincident coordinates and zero projected segments also return None.
 
         Existing *_Elbow_Flex, *_Knee_Flex and *_Hip_Flex keys are retained.
@@ -130,7 +144,7 @@ class BiomechanicsEngine:
                     confidence = float(visibilities[index])
                 except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                     return False
-                if not np.isfinite(confidence) or not cls.VISIBILITY_THRESHOLD <= confidence <= 1:
+                if not np.isfinite(confidence) or not cls.VISIBILITY_THRESHOLD < confidence <= 1:
                     return False
             return True
 
@@ -157,12 +171,14 @@ class BiomechanicsEngine:
                                      else 180.0 - interior)
                     elif name == 'Hip_Flex':
                         # Reverse the trunk ray: downwards is neutral thigh direction.
-                        value = cls._signed_projected_angle(b - a, c - b,
-                                                           'sagittal', anterior_z_sign)
+                        with np.errstate(over='ignore', invalid='ignore'):
+                            value = cls._signed_projected_angle(b - a, c - b,
+                                                               'sagittal', anterior_z_sign)
                     else:
-                        value = cls._signed_projected_angle(
-                            a - b, c - b,
-                            'coronal' if name == 'Shoulder_Abd' else 'sagittal',
-                            -outward if name == 'Shoulder_Abd' else anterior_z_sign)
+                        with np.errstate(over='ignore', invalid='ignore'):
+                            value = cls._signed_projected_angle(
+                                a - b, c - b,
+                                'coronal' if name == 'Shoulder_Abd' else 'sagittal',
+                                -outward if name == 'Shoulder_Abd' else anterior_z_sign)
                 metrics[f'{side}_{name}'] = value
         return metrics

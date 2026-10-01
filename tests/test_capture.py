@@ -1,5 +1,6 @@
 """Hardware-independent lifecycle and concurrency tests (stdlib unittest)."""
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import unittest
 from unittest.mock import patch
@@ -69,14 +70,15 @@ class CaptureTests(unittest.TestCase):
         self.capture.start()
         first = self.capture.wait_for_frame()
         time.sleep(0.05)
-        self.assertGreater(self.capture.snapshot().sequence, first.sequence + 1)
+        later = self.capture.wait_for_frame(first.sequence + 1, timeout=2)
+        self.assertIsNotNone(later)
+        self.assertGreater(later.sequence, first.sequence + 1)
 
     def test_concurrent_lifecycle_and_restart(self):
-        workers = [threading.Thread(target=self.capture.start) for _ in range(8)]
-        for worker in workers:
-            worker.start()
-        for worker in workers:
-            worker.join()
+        with ThreadPoolExecutor(max_workers=8) as workers:
+            starts = [workers.submit(self.capture.start) for _ in range(8)]
+            for start in starts:
+                self.assertIs(start.result(timeout=2), self.capture)
         self.assertIsNotNone(self.capture.wait_for_frame())
         self.capture.stop()
         self.capture.stop()
@@ -120,6 +122,53 @@ class CaptureTests(unittest.TestCase):
         self.camera.gate.clear()
         self.capture.start()
         self.assertIsNone(self.capture.wait_for_frame(timeout=0.01))
+
+    def test_thread_start_failure_can_be_stopped_and_restarted(self):
+        with patch('core.capture.threading.Thread.start', side_effect=RuntimeError('Cannot start')):
+            with self.assertRaises(RuntimeError):
+                self.capture.start()
+        self.capture.stop()  # Formerly tried to join an unstarted Thread.
+        self.assertEqual(self.camera.released, 1)
+        self.capture.start()
+        self.assertIsNotNone(self.capture.wait_for_frame())
+
+    def test_backend_release_failure_is_reported_without_daemon_crash(self):
+        camera = FakeCamera()
+        def fail_release():
+            raise OSError('Backend release failed')
+        camera.release = fail_release
+        capture = VideoCaptureAsync(capture_factory=lambda *args: camera)
+        capture.start()
+        self.assertIsNotNone(capture.wait_for_frame())
+        with self.assertRaises(OSError):
+            capture.stop()
+        self.assertFalse(capture.running)
+        self.assertIsInstance(capture.error, OSError)
+
+    def test_wait_parameter_validation(self):
+        for timeout in (-1, float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                self.capture.wait_for_frame(timeout=timeout)
+        with self.assertRaises(ValueError):
+            self.capture.wait_for_frame(after_sequence=-1)
+
+    def test_repeated_lifecycle_releases_every_device_and_thread(self):
+        cameras = []
+        def factory(*args):
+            camera = FakeCamera()
+            cameras.append(camera)
+            return camera
+        capture = VideoCaptureAsync(capture_factory=factory)
+        try:
+            for _ in range(20):
+                capture.start()
+                self.assertIsNotNone(capture.wait_for_frame(timeout=2))
+                capture.stop()
+                self.assertFalse(capture.running)
+                self.assertIsNone(capture._thread)
+        finally:
+            capture.stop()
+        self.assertTrue(all(camera.released == 1 for camera in cameras))
 
 
 if __name__ == '__main__':
