@@ -13,7 +13,8 @@ import cv2
 import numpy as np
 
 from core.capture import VideoCaptureAsync
-from main import OpenCVDisplay, PoseProcessor, create_pose, run_pipeline
+from core.pose import create_pose
+from main import OpenCVDisplay, PoseProcessor, run_pipeline
 
 
 class PacedReplay:

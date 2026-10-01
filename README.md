@@ -42,6 +42,7 @@ not lossless video recording or a guarantee of zero camera/driver frame drops.
 | Component | Responsibility |
 | --- | --- |
 | `core/capture.py` | Camera lifecycle, daemon worker, latest-frame snapshots, safe ownership |
+| `core/pose.py` | Lazy local BlazePose Full construction and model configuration |
 | `core/biomechanics.py` | Vector math, body/camera frames, confidence-gated bilateral angles |
 | `core/filter.py` | Array-based One-Euro smoothing and optional calibrated bone-length checks |
 | `main.py` | Shared pipeline, pose inference, HUD, controls, sliding diagnostics |
@@ -501,7 +502,8 @@ python validation.py report
 Each acquisition excludes one second of settling and samples a two-second hold.
 It stores the software median, coverage, interquartile spread and half-window
 median drift with the reference/configuration. Holds with <80% valid coverage,
-<5 valid frames, >3-degree spread/drift or premature exit are retained as rejected.
+<5 valid frames, >3-degree spread/drift, a gap over 0.25 seconds between valid
+observations (including either window edge), or premature exit are retained as rejected.
 These are configurable collector quality heuristics, not clinical error limits.
 
 Default outputs are `validation/data/paired_holds.csv`,
@@ -509,7 +511,9 @@ Default outputs are `validation/data/paired_holds.csv`,
 [empty CSV template](validation/template.csv) contains no fabricated records.
 Reports use one observation per hold, group by joint/view, and show MAE, signed
 bias, RMSE, maximum absolute error, reference range, sample/participant counts and
-availability. Missing required categories cause report exit code 2. Category
+availability. JSON and Markdown also retain the reference method and measurement
+configuration; different reference methods cannot be silently pooled within a
+joint/view. Missing required categories cause report exit code 2. Category
 presence alone does not establish adequate validation; examine ranges, repetitions,
 reference uncertainty and rejected holds. Confidence intervals/agreement plots
 are not automated; add them with suitable hold/participant sampling after data
@@ -556,3 +560,5 @@ matrix, corrected defects, repeated test evidence and unresolved real-world
 validation gaps.
 The subsequent [completion report](docs/COMPLETION_REPORT.md) records orientation,
 tuning, validation tooling and benchmark evidence added after that audit.
+The latest [assignment compliance check](docs/ASSIGNMENT_CHECK.md) maps the original
+requirements to current code and clearly identifies the two physical evidence gaps.

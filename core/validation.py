@@ -38,14 +38,17 @@ class HoldCollector:
 
     Invalid measurements stay in the denominator. Low coverage, too few valid
     frames, large interquartile spread or half-window median drift reject a hold.
+    Valid observations must also cover the window without gaps over max_gap;
+    a stalled camera must not turn a few sparse observations into a stable hold.
     Thresholds are data-quality heuristics, not clinical accuracy thresholds.
     Callback work is small and performs no disk I/O inside the display loop.
     """
     def __init__(self, joint, seconds=2, settling=1, min_coverage=.8,
-                 max_iqr=3, max_drift=3, max_samples=10000):
+                 max_iqr=3, max_drift=3, max_samples=10000, max_gap=.25):
         if joint not in JOINTS:
             raise ValueError('Unsupported joint')
-        for name, value in (('seconds', seconds), ('max_iqr', max_iqr), ('max_drift', max_drift)):
+        for name, value in (('seconds', seconds), ('max_iqr', max_iqr),
+                            ('max_drift', max_drift), ('max_gap', max_gap)):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f'{name} must be positive and finite')
         if not math.isfinite(settling) or settling < 0 or seconds + settling > 60:
@@ -57,6 +60,7 @@ class HoldCollector:
         self.joint, self.seconds, self.settling = joint, seconds, settling
         self.min_coverage, self.max_iqr, self.max_drift = min_coverage, max_iqr, max_drift
         self.max_samples = max_samples
+        self.max_gap = max_gap
         self.start = self.last_time = None
         self.samples = []
         self.completed = False
@@ -103,6 +107,13 @@ class HoldCollector:
             reasons.append('unstable angle spread')
         if drift is None or drift > self.max_drift:
             reasons.append('unstable or missing half-window medians')
+        if self.start is not None:
+            window_start = self.start + self.settling
+            valid_times = [t for t, value, _ in self.samples if value is not None]
+            boundaries = [window_start, *valid_times, window_start+self.seconds]
+            gap = max(np.diff(boundaries))
+            if gap > self.max_gap + 1e-9:
+                reasons.append(f'insufficient temporal coverage (max gap {gap:.3f}s)')
         return {'software_deg': median, 'valid_frames': len(valid), 'total_frames': total,
                 'valid_fraction': fraction, 'iqr_deg': iqr, 'drift_deg': drift,
                 'rejection_reason': '; '.join(reasons)}
@@ -152,6 +163,7 @@ def analyze_rows(rows):
     rejected = []
     seen = set()
     configurations = {}
+    reference_methods = {}
     for number, row in enumerate(rows, start=2):
         try:
             hold_id = row['hold_id'].strip()
@@ -193,6 +205,10 @@ def analyze_rows(rows):
             else:
                 config = (row['coordinate_frame'], *parameters, int(row['width']), int(row['height']))
                 group = (row['joint'], row['view'])
+                method = row['reference_method'].strip()
+                if group in reference_methods and reference_methods[group] != method:
+                    raise ValueError('Mixed reference methods within a joint/view; use separate CSV studies')
+                reference_methods[group] = method
                 if group in configurations and configurations[group] != config:
                     raise ValueError('Mixed configurations within a joint/view; use separate CSV studies')
                 configurations[group] = config
@@ -208,6 +224,7 @@ def analyze_rows(rows):
         error = software - reference
         accepted_joints.add(joint)
         summaries.append({'joint': joint, 'view': view, 'holds': len(pairs),
+                          'reference_method': reference_methods[(joint, view)],
                           'participants': len({p[2] for p in pairs}),
                           'mae_deg': float(np.mean(abs(error))),
                           'bias_deg': float(np.mean(error)),
@@ -256,7 +273,18 @@ def markdown_report(report):
         lines += ['', 'No accepted measurements. Accuracy remains unmeasured.']
     lines += ['', 'Required joint categories: ' + ', '.join(
         f"{key}={'present' if value else 'missing'}" for key, value in report['required_joint_categories'].items()),
-        '', 'Category presence is a coverage check, not a clinical pass criterion.', '', '## Limitations', '']
+        '', 'Category presence is a coverage check, not a clinical pass criterion.']
+    if report['groups']:
+        lines += ['', '## Reference and measurement setup', '',
+                  '| Joint | View | Reference method | Frame | Cutoff / beta / derivative cutoff | Resolution |',
+                  '| --- | --- | --- | --- | --- | --- |']
+        for row in report['groups']:
+            config = row['configuration']
+            method = row['reference_method'].replace('|', '/').replace('\n', ' ').replace('\r', ' ')
+            lines.append(f"| {row['joint']} | {row['view']} | {method} | {config['coordinate_frame']} | "
+                         f"{config['min_cutoff']} / {config['beta']} / {config['d_cutoff']} | "
+                         f"{config['width']}x{config['height']} |")
+    lines += ['', '## Limitations', '']
     lines.extend('- ' + text for text in report['limitations'])
     if report['rejections']:
         lines += ['', '## Rejected holds', '', '| Hold ID | Joint | View | Reason |', '| --- | --- | --- | --- |']

@@ -53,6 +53,35 @@ class ValidationTests(unittest.TestCase):
         self.assertIn('unstable angle spread', summary['rejection_reason'])
         self.assertIn('half-window', summary['rejection_reason'])
 
+    def test_sparse_frames_across_a_camera_stall_are_not_a_stable_hold(self):
+        collector = HoldCollector('L_Elbow_Flex', seconds=2, settling=0)
+        for timestamp in (0, .01, .02, 1.90, 1.91, 2):
+            collector(hold_record(timestamp, 45))
+        summary = collector.summary()
+        self.assertEqual(summary['valid_fraction'], 1)
+        self.assertEqual(summary['valid_frames'], 5)
+        self.assertIn('insufficient temporal coverage', summary['rejection_reason'])
+
+    def test_contiguous_occlusion_and_unobserved_window_edges_are_rejected(self):
+        for first_missing in (0, 30, 102):
+            with self.subTest(first_missing=first_missing):
+                collector = HoldCollector('L_Elbow_Flex', seconds=2, settling=0)
+                for i in range(121):
+                    angle = None if first_missing <= i < first_missing+18 else 45
+                    collector(hold_record(i/60, angle))
+                summary = collector.summary()
+                self.assertGreaterEqual(summary['valid_fraction'], .8)
+                self.assertIn('insufficient temporal coverage', summary['rejection_reason'])
+
+    def test_regular_30_fps_hold_meets_temporal_coverage(self):
+        collector = HoldCollector('L_Elbow_Flex', seconds=2, settling=0)
+        for i in range(61):
+            collector(hold_record(i/30, 45))
+        self.assertEqual(collector.summary()['rejection_reason'], '')
+        for max_gap in (0, -1, float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                HoldCollector('L_Elbow_Flex', max_gap=max_gap)
+
     def test_early_exit_empty_nonfinite_and_sample_cap_cannot_pass(self):
         collector = HoldCollector('L_Elbow_Flex', seconds=1, settling=0, max_samples=5)
         self.assertIn('incomplete hold', collector.summary()['rejection_reason'])
@@ -84,6 +113,19 @@ class ValidationTests(unittest.TestCase):
         self.assertAlmostEqual(row['rmse_deg'], (20/3)**.5)
         self.assertEqual(row['reference_min_deg'], 0)
         self.assertFalse(report['required_scope_present'])
+
+    def test_reports_preserve_reference_method_and_configuration(self):
+        report = analyze_rows([paired_row(reference_method='assessor A: baseline goniometer')])
+        self.assertEqual(report['groups'][0]['reference_method'], 'assessor A: baseline goniometer')
+        markdown = markdown_report(report)
+        self.assertIn('assessor A: baseline goniometer', markdown)
+        self.assertIn('640x480', markdown)
+        self.assertIn('1.0 / 5.0 / 1.0', markdown)
+
+    def test_different_reference_methods_cannot_silently_share_one_error_statistic(self):
+        with self.assertRaisesRegex(ValueError, 'Mixed reference methods'):
+            analyze_rows([paired_row('a', reference_method='manual goniometer'),
+                          paired_row('b', reference_method='another reference system')])
 
     def test_required_scope_and_per_view_groups_include_challenging_flexion(self):
         rows = [paired_row('a'), paired_row('b', joint='R_Knee_Flex'),

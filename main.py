@@ -13,6 +13,7 @@ import numpy as np
 from core.biomechanics import BiomechanicsEngine
 from core.capture import VideoCaptureAsync
 from core.filter import OneEuroFilter
+from core.pose import create_pose
 
 
 LOGGER = logging.getLogger(__name__)
@@ -223,17 +224,6 @@ class OpenCVDisplay:
                 LOGGER.debug('Window was already closed', exc_info=True)
             finally:
                 self._opened = False
-
-
-def create_pose():
-    """Lazy model import keeps mock/headless tests independent of MediaPipe."""
-    import mediapipe as mp
-    if not hasattr(mp, 'solutions'):
-        raise RuntimeError('Legacy Pose API unavailable; install requirements.txt in a fresh venv')
-    return mp.solutions.pose.Pose(
-        static_image_mode=False, model_complexity=1, smooth_landmarks=False,
-        enable_segmentation=False, min_detection_confidence=0.6,
-        min_tracking_confidence=0.6)
 
 
 def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,

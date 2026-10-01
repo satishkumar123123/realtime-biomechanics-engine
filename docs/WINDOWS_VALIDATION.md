@@ -60,7 +60,8 @@ replace them with the assessor's actual readings.
 Each command opens the camera, excludes one settling second, samples two seconds,
 closes the pipeline and appends a paired hold to `validation/data/paired_holds.csv`.
 The window shows settling/measurement progress. Early exit, missing landmarks,
-low coverage, high spread or median drift save a rejected hold and return code 2.
+low coverage, high spread/median drift or a gap over 0.25 seconds without a valid
+observation save a rejected hold and return code 2.
 Keep rejected holds and repeat the measurement under an improved setup.
 
 Collect neutral and several comfortable bends, at least three repeats per
@@ -77,7 +78,8 @@ Generate the report:
 .\venv\Scripts\python.exe validation.py report
 ```
 
-Open `validation/results/accuracy.md` and `accuracy.json`. They show per-joint/view
+Open `validation/results/accuracy.md` and `accuracy.json`. They preserve the
+reference method, coordinate frame, filter settings and resolution, and show per-joint/view
 MAE, bias/RMSE, sample/participant counts, reference ranges, coverage and rejected
 holds. Report exit code 2 means elbow, knee or shoulder/hip flexion evidence is
 missing. Even a scope-complete report needs adequate repeated positions and a

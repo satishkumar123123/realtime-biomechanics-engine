@@ -1,5 +1,8 @@
 # Assignment follow-up: implementation and evidence
 
+> This records the first completion pass. See [Assignment Check](ASSIGNMENT_CHECK.md)
+> for the subsequent validation fixes, separate model module and latest test count.
+
 Date: 1 October 2026. Baseline: GitHub commit
 `e7b50abd78d29b6f4dbd80a045ec23c4c091e60f`.
 
