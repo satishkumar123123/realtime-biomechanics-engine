@@ -217,7 +217,7 @@ def create_pose():
 
 
 def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
-                 processor=None, max_frames=None, stall_timeout=3.0):
+                 processor=None, max_frames=None, stall_timeout=3.0, on_frame=None):
     """Run fresh frames serially on the UI thread while camera polling continues.
 
     Dependencies are injectable for mock tests. Resource ownership transfers to
@@ -226,6 +226,8 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
     Timing uses perf_counter throughout. Capture->UI means host read completion
     through imshow/event pumping; OpenCV cannot timestamp actual screen photons.
     HUD pipeline aggregates describe completed frames, so they lag one frame.
+    Optional on_frame(record) receives completed-frame timings and returns False
+    to stop; observer work is excluded from that frame's latency, but affects FPS.
     """
     if max_frames is not None and max_frames <= 0:
         raise ValueError('max_frames must be positive')
@@ -275,13 +277,23 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
             rgb.flags.writeable = False
             inference_start = time.perf_counter()
             results = model.process(rgb)
-            diagnostics.record_inference((time.perf_counter() - inference_start) * 1000)
+            inference_ms = (time.perf_counter() - inference_start) * 1000
+            diagnostics.record_inference(inference_ms)
             metrics, reasons = processor.process(results, sample.timestamp_ns / 1e9)
             rendered = renderer.render(frame, results, metrics, reasons, diagnostics.summary())
             display.submit(rendered)
             key = display.poll_key()
-            diagnostics.record_display(sample.timestamp_ns / 1e9, time.perf_counter())
+            completion = time.perf_counter()
+            diagnostics.record_display(sample.timestamp_ns / 1e9, completion)
             processed += 1
+            if on_frame is not None and on_frame({
+                    'sequence': sample.sequence, 'capture_time': sample.timestamp_ns / 1e9,
+                    'completion_time': completion, 'inference_ms': inference_ms,
+                    'pipeline_ms': max(0, (completion - sample.timestamp_ns / 1e9) * 1000),
+                    'reliable_metrics': sum(value is not None for value in metrics.values()),
+                    'pose_detected': getattr(results, 'pose_world_landmarks', None) is not None,
+            }) is False:
+                break
             if key in (ord('q'), 27):
                 break
             if key == ord('r'):

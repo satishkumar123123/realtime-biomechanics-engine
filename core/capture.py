@@ -30,13 +30,15 @@ class VideoCaptureAsync:
     """
 
     def __init__(self, source=0, width=640, height=480, fps=60.0,
-                 backend=cv2.CAP_ANY):
+                 backend=cv2.CAP_ANY, *, capture_factory=None):
         if (not isinstance(width, int) or not isinstance(height, int)
                 or width <= 0 or height <= 0
                 or not math.isfinite(fps) or fps <= 0):
             raise ValueError("Resolution and FPS must be positive and finite")
         self.source, self.width, self.height = source, width, height
         self.fps, self.backend = fps, backend
+        # Optional OpenCV-compatible source factory for paced replay/benchmarks.
+        self._capture_factory = capture_factory
         self._lifecycle = threading.Lock()
         self._condition = threading.Condition(threading.Lock())
         self._stop = threading.Event()
@@ -70,7 +72,8 @@ class VideoCaptureAsync:
                 if self._stop.is_set():
                     raise RuntimeError("Previous camera worker has not stopped")
                 return self
-            cap = cv2.VideoCapture(self.source, self.backend)
+            factory = cv2.VideoCapture if self._capture_factory is None else self._capture_factory
+            cap = factory(self.source, self.backend)
             try:
                 if not cap.isOpened():
                     raise OSError(f"Cannot open camera {self.source!r}")
