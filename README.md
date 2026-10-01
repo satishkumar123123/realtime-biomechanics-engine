@@ -81,3 +81,45 @@ The benchmark reports producer/consumer FPS, superseded frames, host frame age,
 and mean/p99/max mailbox access time. It fails if measured maximum mailbox access
 is at least 1 ms. Sensor wait and frame-copy costs are excluded from that lock
 overhead measurement; it is a measured check, not a hard real-time guarantee.
+
+## Neutral-zero joint measurements
+
+`BiomechanicsEngine.compute_joint_metrics(world_landmarks, visibilities)` accepts
+a `(33, 3)` NumPy-compatible coordinate array and a visibility dictionary or
+33-element sequence. Inputs follow the [MediaPipe world landmark format](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker):
+metric 3D coordinates with their origin at the midpoint of the hips.
+
+Each row below is returned for both `L_` and `R_` prefixes, in degrees:
+
+| Key suffix | Geometry | Neutral and sign |
+| --- | --- | --- |
+| `Elbow_Flex` | Shoulder-elbow-wrist, 3D | `180 - interior`; straight = 0 |
+| `Knee_Flex` | Hip-knee-ankle, 3D | `180 - interior`; straight = 0 |
+| `Shoulder_Flex` | Hip-shoulder-elbow, Y-Z | Arm at side = 0; flexion positive, extension negative |
+| `Shoulder_Abd` | Hip-shoulder-elbow, X-Y | Arm at side = 0; abduction positive, adduction negative |
+| `Hip_Flex` | Shoulder-hip-knee, Y-Z | Standing = 0; flexion positive, extension negative |
+| `Ankle_Dorsi_Plantar` | Knee-ankle-foot index, 3D | `interior - 90`; plantarflexion positive, dorsiflexion negative |
+
+Every landmark in a measurement must have finite visibility at least 0.65.
+Missing confidence, nonfinite coordinates, coincident landmarks and projected
+segments of length at most `1e-7` produce `None`. Invalid input array shapes raise
+`ValueError`. A motion perpendicular to a projection plane can make that angle
+undefined: exact 90-degree pure abduction has no sagittal arm direction, so its
+shoulder flexion returns `None`, not a fabricated zero.
+
+The fixed camera must be level and the subject aligned facing it for X-Y/Y-Z to
+approximate anatomical planes. Signed projections assume anterior is -Z and
+subject-left is +X; keyword parameters `anterior_z_sign` and `left_x_sign` can
+reverse those assumptions. Root-relative coordinates do not automatically
+provide an anatomical coordinate frame. Trunk movement also affects the
+shoulder/hip reference rays. Elbow/knee triplet angles cannot distinguish
+hyperextension from flexion, and ankle-foot-index geometry is only a proxy for
+the clinical ankle axis. These geometric estimates have not been clinically
+validated. Existing elbow/knee/hip dictionary keys remain compatible with the
+baseline consumer.
+
+Run all geometry and capture tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
