@@ -18,6 +18,9 @@ class BiomechanicsEngine:
     VISIBILITY_THRESHOLD = 0.65
     # Reject directions close to a plane normal, where tiny noise dominates angle.
     MIN_PROJECTION_RATIO = 0.05
+    # Signed rotation is ambiguous at the antiparallel branch cut. Reject noisy
+    # observations within this angular margin; exact opposition uses a +180 tie.
+    SIGN_AMBIGUITY_DEGREES = 0.5
     FRAME_LANDMARKS = (11, 12, 23, 24)
 
     @classmethod
@@ -25,7 +28,10 @@ class BiomechanicsEngine:
         """All requested confidence values must be finite and in (0.65, 1]."""
         for index in indices:
             try:
-                confidence = float(visibilities[index])
+                raw_confidence = visibilities[index]
+                if np.ndim(raw_confidence) != 0:
+                    return False
+                confidence = float(raw_confidence)
             except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                 return False
             if not np.isfinite(confidence) or not cls.VISIBILITY_THRESHOLD < confidence <= 1:
@@ -82,8 +88,10 @@ class BiomechanicsEngine:
         vector = cls._vector(vector)
         if not np.all(np.isfinite(vector)):
             return None
-        # hypot avoids overflow/underflow from squaring raw coordinates.
-        norm = float(np.hypot.reduce(vector))
+        # hypot avoids intermediate squared overflow; the final length can
+        # still exceed float64 even when each component is finite.
+        with np.errstate(over='ignore', under='ignore', invalid='ignore'):
+            norm = float(np.hypot.reduce(vector))
         return norm if np.isfinite(norm) else None
 
     @classmethod
@@ -159,6 +167,8 @@ class BiomechanicsEngine:
         if cosine < 0 and abs(sine) <= cls.EPSILON:
             return 180.0
         angle = float(np.degrees(np.arctan2(sine, cosine)))
+        if abs(angle) >= 180.0 - cls.SIGN_AMBIGUITY_DEGREES:
+            return None
         return 0.0 if abs(angle) < cls.EPSILON else angle
 
     @classmethod

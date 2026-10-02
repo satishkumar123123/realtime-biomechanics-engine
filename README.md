@@ -11,6 +11,8 @@ projections, static reference-pair collection and accuracy reporting. The test
 suite passes. Reproducible synthetic-input reports are included. Actual
 detected-human desktop throughput and manual-reference accuracy remain unmeasured;
 no participant readings or real-camera performance results have been invented.
+See the [final regression audit](docs/REGRESSION_AUDIT.md) for the latest fixes,
+strict test results and headless smoke measurements.
 
 ## System architecture
 
@@ -32,7 +34,8 @@ flowchart TD
 The daemon worker drains camera frames independently of model/UI processing. It
 publishes immutable frame snapshots with sequence numbers and host timestamps.
 The main thread processes each fresh sequence once, keeping UI operations on the
-same thread. A brief mailbox lock protects publication; frame copying, inference,
+same thread. HighGUI calls from other threads are explicitly rejected before
+entering native window code. A brief mailbox lock protects publication; frame copying, inference,
 filtering and rendering occur outside that lock.
 
 The mailbox retains only the latest frame. Slow consumers intentionally supersede
@@ -75,6 +78,12 @@ is pinned to MediaPipe 0.10.21. The application uses `opencv-contrib-python`, wh
 MediaPipe already requires and which supplies `cv2`; installing multiple OpenCV
 wheel variants in one environment can overwrite the same module. NumPy is bounded
 below version 2 for this dependency set. Python 3.10-3.12 is recommended.
+On Python 3.12, the pinned protobuf 4.x native map containers emit two known
+[upstream import deprecations](https://github.com/protocolbuffers/protobuf/issues/15077).
+`core/pose.py` scopes compatibility handling to those exact two messages during
+import. Other warnings, including inference warnings, retain the caller's policy;
+there is no global warning suppression. The strict suite also checks real nonempty
+landmark-packet decoding in a fresh interpreter.
 
 ## Goniometric reference and mathematics
 
@@ -100,6 +109,9 @@ interior = degrees(acos(clamp(dot(unit(u), unit(v)), -1, 1)))
 ```
 
 Euclidean norms, normalized dot products and cross products use finite checks.
+Even finite components whose combined norm overflows return unavailable without
+emitting numerical warnings. Visibility entries must be scalars; malformed nested
+confidence arrays are rejected instead of implicitly converted.
 Segments with length at most `1e-7` have no defined direction and return `None`.
 Cosines are clamped to `[-1, 1]`; epsilon is used as a validity guard rather than
 adding a bias to every denominator.
@@ -141,6 +153,10 @@ Nearly out-of-plane rays are rejected when projected length is below 5% of
 the 3D segment length; this heuristic guards ill-conditioned directions and
 requires real-motion tuning. The exact opposite ray is consistently reported
 as +180 degrees because its direction of rotation is geometrically ambiguous.
+Other directions within 0.5 degrees of that antiparallel ray return `None` instead
+of alternating between nearly +180 and -180 under small noise. This is an explicit
+uncertainty band, not temporal angle unwrapping; larger excursions across the
+principal-angle branch cut still require anatomical interpretation.
 The low-level engine preserves `coordinate_frame='camera'` as its compatibility
 default; the desktop explicitly selects body mode. `--coordinate-frame camera`
 retains fixed camera X-Y/Y-Z and requires front alignment. Its default signs assume
@@ -215,6 +231,9 @@ Visibility must be finite and **strictly greater than 0.65** for every involved 
 exactly 0.65 is rejected to match the audited threshold. Missing, low-confidence or nonfinite coordinates are masked,
 never extrapolated into a valid angle. Invalid filter components return NaN and
 restart at their next valid observation. Pose loss and the `r` key reset history.
+The filter also accepts a whole-frame `None`: all established components become
+unavailable and reinitialize independently when valid data returns. An initial
+`None` returns scalar NaN without committing a shape or timestamp.
 Duplicate/backward timestamps hold valid components; invalid components still
 clear history and return NaN;
 positive intervals at most `1e-12 s` are also guarded. Reset after a tracking gap
@@ -348,7 +367,7 @@ accuracy limits. Ordinary diagnostic runs return 0 even when those checks fail.
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest -q -W error
 ```
 
 A stdlib-only runner is also supported after runtime dependency installation:
@@ -366,7 +385,11 @@ The real model smoke test is skipped if MediaPipe is not installed.
 Orientation regressions additionally cover side/back views, rigid transforms,
 contradictory/missing torso anchors and metric-scale filter tuning. Validation tests
 cover neutral zero, rejected/occluded holds, error formulas, schema checks and CLI
-collection/reporting. See the [current follow-up verification](docs/COMPLETION_REPORT.md)
+collection/reporting. Lifecycle regressions include interrupted thread startup,
+single-owner release and backend garbage collection after chained driver failures.
+Headless benchmark/validation tests prohibit every HighGUI call, and native display
+tests cover main-thread enforcement and event-pump failure cleanup.
+See the [final regression audit](docs/REGRESSION_AUDIT.md)
 for the complete test count and measured evidence.
 
 ## Benchmark definitions and measured results

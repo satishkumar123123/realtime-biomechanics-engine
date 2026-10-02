@@ -137,6 +137,31 @@ class BiomechanicsTests(unittest.TestCase):
             self.assertGreaterEqual(cosine, -1)
             self.assertAlmostEqual(cosine, 1)
 
+    def test_unrepresentable_norm_is_unavailable_without_warning(self):
+        vector = np.full(3, 1.7e308)
+        self.assertIsNone(Engine.euclidean_norm(vector))
+        self.assertIsNone(Engine.normalize(vector))
+        self.assertIsNone(Engine.normalized_dot_product(vector, (1, 0, 0)))
+        self.assertIsNone(Engine.cross_product(vector, (1e308, -1e308, 1e308)))
+
+    def test_malformed_confidence_arrays_are_rejected(self):
+        for visibility in (None, np.ones((33, 1)), np.ones((33, 2)), []):
+            with self.subTest(shape=np.shape(visibility)):
+                metrics = Engine.compute_joint_metrics(self.points, visibility)
+                self.assertTrue(all(value is None for value in metrics.values()))
+        self.visibility[15] = np.array([1.0])
+        self.assertIsNone(self.metrics()['L_Elbow_Flex'])
+        self.assertIsNotNone(self.metrics()['R_Elbow_Flex'])
+
+    def test_all_metrics_reject_collapsed_and_nonfinite_poses(self):
+        for frame in ('camera', 'body'):
+            for value in (0.0, np.nan, np.inf, -np.inf):
+                with self.subTest(frame=frame, value=value):
+                    metrics = Engine.compute_joint_metrics(
+                        np.full((33, 3), value), self.visibility, coordinate_frame=frame)
+                    self.assertEqual(len(metrics), 12)
+                    self.assertTrue(all(angle is None for angle in metrics.values()))
+
     def test_translation_and_scale_invariance(self):
         baseline = self.metrics()
         for scale in (0.5, 3):
@@ -174,6 +199,23 @@ class BiomechanicsTests(unittest.TestCase):
             metrics = self.metrics()
             self.assertAlmostEqual(metrics[f'{side}_Shoulder_Flex'], 180)
             self.assertAlmostEqual(metrics[f'{side}_Shoulder_Abd'], 180)
+
+    def test_noise_around_antiparallel_ray_does_not_flip_signed_angles(self):
+        for frame in ('camera', 'body'):
+            for side, shoulder, elbow, _, hip, knee, _, _, _ in SIDES:
+                for noise in (-1e-4, 1e-4):
+                    with self.subTest(frame=frame, side=side, noise=noise):
+                        self.points[elbow] = self.points[shoulder] + (noise, -.3, noise)
+                        self.points[knee] = self.points[hip] + (noise, -.5, noise)
+                        metrics = self.metrics(coordinate_frame=frame)
+                        for joint in ('Shoulder_Flex', 'Shoulder_Abd', 'Hip_Flex'):
+                            self.assertIsNone(metrics[f'{side}_{joint}'])
+        # No ROM clipping: values outside the ambiguity margin keep their sign.
+        for angle in (-179.0, 179.0):
+            radians = np.radians(angle)
+            result = Engine._signed_projected_angle(
+                (0, 1, 0), (0, np.cos(radians), -np.sin(radians)), 'sagittal', -1)
+            self.assertAlmostEqual(result, angle)
 
     def test_reference_rom_endpoints_and_unclipped_geometry(self):
         for side, _, elbow, wrist, _, knee, ankle, _, _ in SIDES:

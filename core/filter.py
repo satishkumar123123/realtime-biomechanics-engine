@@ -20,7 +20,7 @@ class OneEuroFilter:
     are starting values, not a zero-lag guarantee. Increase beta when fast motion
     still lags. Use one instance per stream; calls must be externally serialized.
 
-    Invalid components (NaN, infinity, or valid_mask=False) return NaN and clear
+    Invalid components (None, NaN, infinity, or valid_mask=False) return NaN and clear
     that component's history. Its next valid observation starts without a stale
     derivative. Repeated/backward timestamps hold valid components; invalid
     components still clear history and return NaN. Missing samples must reach
@@ -69,14 +69,19 @@ class OneEuroFilter:
 
         valid_mask must broadcast to the input shape: for (33, 3) landmarks,
         supply a (33, 1) visibility mask to gate whole keypoints. Nonfinite input
-        is always invalid. Input shape is fixed until reset. Nonfinite timestamps
+        is always invalid. A whole-frame None invalidates all established components;
+        before the first shaped sample it returns scalar NaN without state. Input
+        shape is fixed until reset. Nonfinite timestamps
         and malformed input raise ValueError without changing state. Positive
         intervals <= 1e-12 seconds are treated like duplicates for numeric safety.
         """
-        sample = np.asarray(value, dtype=np.float64)
         timestamp = time.perf_counter() if timestamp is None else float(timestamp)
         if not math.isfinite(timestamp):
             raise ValueError("timestamp must be finite monotonic seconds")
+        if value is None and self._raw is None:
+            return np.asarray(np.nan)
+        sample = (np.full_like(self._raw, np.nan) if value is None
+                  else np.asarray(value, dtype=np.float64))
         if self._raw is not None and sample.shape != self._raw.shape:
             raise ValueError("Input shape changed; reset before changing shape")
         valid = np.isfinite(sample)
@@ -194,7 +199,10 @@ class BoneLengthConstraintChecker:
         if visibilities is not None:
             for index in pair:
                 try:
-                    confidence = float(visibilities[index])
+                    raw_confidence = visibilities[index]
+                    if np.ndim(raw_confidence) != 0:
+                        return None
+                    confidence = float(raw_confidence)
                 except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                     return None
                 if not np.isfinite(confidence) or not self.visibility_threshold < confidence <= 1:

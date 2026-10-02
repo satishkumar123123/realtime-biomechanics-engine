@@ -1,5 +1,6 @@
 """Headless integration tests: real rendering, mock camera/model, no GUI calls."""
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import time
 import unittest
@@ -245,6 +246,33 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 display.submit(np.zeros((480, 640, 3), dtype=np.uint8))
             create.assert_not_called()
+
+    def test_native_gui_calls_are_rejected_off_main_thread(self):
+        display = OpenCVDisplay()
+        with ThreadPoolExecutor(max_workers=1) as workers, patch(
+                'main.cv2.namedWindow') as create, patch('main.cv2.imshow') as show, patch(
+                'main.cv2.waitKey') as wait, patch('main.cv2.destroyWindow') as destroy:
+            with self.assertRaisesRegex(RuntimeError, 'main thread'):
+                workers.submit(display.submit, np.zeros((10, 10, 3), dtype=np.uint8)).result(2)
+            display._opened = True
+            for operation in (display.poll_key, display.close):
+                with self.assertRaisesRegex(RuntimeError, 'main thread'):
+                    workers.submit(operation).result(2)
+            for native in (create, show, wait, destroy):
+                native.assert_not_called()
+            display.close()  # Owner thread can still clean up after misuse.
+            destroy.assert_called_once()
+
+    def test_event_pump_exception_still_cleans_all_resources(self):
+        cap, model, display = MockCapture(), MockPose(), OpenCVDisplay()
+        display._opened = True
+        with patch('main.cv2.imshow'), patch('main.cv2.waitKey', side_effect=cv2.error(
+                'Event pump failed')), patch('main.cv2.destroyWindow') as destroy:
+            with self.assertRaises(cv2.error):
+                run_pipeline(cap, lambda: model, display)
+            self.assertTrue(cap.stopped and model.closed)
+            self.assertFalse(display._opened)
+            destroy.assert_called_once()
 
     def test_small_frame_hud_has_space_for_all_rows(self):
         renderer = HUDRenderer()

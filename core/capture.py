@@ -10,6 +10,19 @@ import cv2
 import numpy as np
 
 
+def _detach_tracebacks(error):
+    """Keep exception details without retaining backend/frame stack references."""
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        current.__traceback__ = None
+        pending.extend((current.__cause__, current.__context__))
+    return error
+
+
 @dataclass(frozen=True)
 class FrameSnapshot:
     """One publication; timestamp is monotonic host time after camera read."""
@@ -58,7 +71,7 @@ class VideoCaptureAsync:
 
     @property
     def error(self):
-        """Last worker failure, or None; stale frames are cleared on failure."""
+        """Last worker failure without traceback; stale frames clear on failure."""
         with self._condition:
             return self._error
 
@@ -73,8 +86,14 @@ class VideoCaptureAsync:
                 if self._stop.is_set():
                     raise RuntimeError("Previous camera worker has not stopped")
                 return self
+            self._thread = None
+            with self._condition:
+                self._latest = None
+                self._error = None
+                self._cleanup_error = None
             factory = cv2.VideoCapture if self._capture_factory is None else self._capture_factory
             cap = factory(self.source, self.backend)
+            worker = None
             try:
                 if not cap.isOpened():
                     raise OSError(f"Cannot open camera {self.source!r}")
@@ -94,22 +113,33 @@ class VideoCaptureAsync:
                     self._error = None
                     self._cleanup_error = None
                     self._running = True
-                self._thread = threading.Thread(
+                worker = threading.Thread(
                     target=self._capture, args=(cap,), name="camera-capture",
                     daemon=True)
-                self._thread.start()
+                self._thread = worker
+                worker.start()
             except BaseException:
-                # A failed Thread.start() leaves an unstarted Thread: never join it.
-                self._thread = None
-                try:
-                    cap.release()
-                except Exception as exc:
-                    self._cleanup_error = exc
-                finally:
-                    with self._condition:
-                        self._running = False
-                        self._latest = None
-                        self._condition.notify_all()
+                self._stop.set()
+                with self._condition:
+                    self._latest = None
+                    self._condition.notify_all()
+                if worker is not None and worker.ident is not None:
+                    # Thread.start may be interrupted after launching. Never
+                    # release concurrently with that worker or lose its handle.
+                    worker.join(timeout=2.0)
+                    if not worker.is_alive():
+                        self._thread = None
+                else:
+                    # A genuinely unstarted thread cannot be joined.
+                    self._thread = None
+                    try:
+                        cap.release()
+                    except Exception as exc:
+                        self._cleanup_error = _detach_tracebacks(exc)
+                    finally:
+                        with self._condition:
+                            self._running = False
+                            self._condition.notify_all()
                 raise
         return self
 
@@ -133,7 +163,7 @@ class VideoCaptureAsync:
                     self._condition.notify_all()
         except Exception as exc:
             with self._condition:
-                self._error = exc
+                self._error = _detach_tracebacks(exc)
                 self._latest = None
         finally:
             try:
@@ -141,7 +171,7 @@ class VideoCaptureAsync:
             except Exception as exc:
                 # Surface cleanup failure instead of an unhandled daemon exception.
                 with self._condition:
-                    self._cleanup_error = exc
+                    self._cleanup_error = _detach_tracebacks(exc)
                     if self._error is None:
                         self._error = exc
             finally:

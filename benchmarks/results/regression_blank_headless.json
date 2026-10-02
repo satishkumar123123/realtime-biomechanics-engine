@@ -1,0 +1,111 @@
+{
+  "measured_frames": 300,
+  "warmup_frames": 30,
+  "measured_interval_seconds": 5.143253008999636,
+  "achieved_e2e_fps": 58.1344140521206,
+  "inference": {
+    "mean_ms": 12.714392440005517,
+    "min_ms": 9.704514999612002,
+    "max_ms": 42.90369099999225,
+    "p95_ms": 19.786582999859107
+  },
+  "pipeline": {
+    "mean_ms": 17.42762837332369,
+    "min_ms": 11.806445999809512,
+    "max_ms": 48.99638500000947,
+    "p95_ms": 30.91144590018758
+  },
+  "frames_with_pose": 0,
+  "mean_reliable_metrics": 0.0,
+  "pose_coverage": 0.0,
+  "numeric_coverage": 0.0,
+  "metric_coverage": {
+    "L_Ankle_Dorsi_Plantar": 0.0,
+    "L_Elbow_Flex": 0.0,
+    "L_Hip_Flex": 0.0,
+    "L_Knee_Flex": 0.0,
+    "L_Shoulder_Abd": 0.0,
+    "L_Shoulder_Flex": 0.0,
+    "R_Ankle_Dorsi_Plantar": 0.0,
+    "R_Elbow_Flex": 0.0,
+    "R_Hip_Flex": 0.0,
+    "R_Knee_Flex": 0.0,
+    "R_Shoulder_Abd": 0.0,
+    "R_Shoulder_Flex": 0.0
+  },
+  "detected_pose_latency": null,
+  "rolling_window": {
+    "frames": 120,
+    "fps": 59.088143731937734,
+    "inference": {
+      "mean_ms": 11.997934858338036,
+      "min_ms": 9.704514999612002,
+      "max_ms": 31.824702999983856,
+      "p95_ms": 16.00928110017321
+    },
+    "pipeline": {
+      "mean_ms": 15.071354216676506,
+      "min_ms": 11.85829400037619,
+      "max_ms": 34.03025199986587,
+      "p95_ms": 19.768370099905038
+    }
+  },
+  "mailbox": {
+    "published_intervals": 307,
+    "consumed_intervals": 299,
+    "superseded_frames": 8,
+    "overrun_events": 8,
+    "superseded_percent": 2.6058631921824102,
+    "hardware_dropped_frames": null,
+    "scope": "Sequence gaps between first and last measured frames; excludes startup and tail"
+  },
+  "schema_version": 2,
+  "hardware": {
+    "os": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "logical_cpus": 9,
+    "cpu_quota_cores": 8.0,
+    "python": "3.12.14",
+    "opencv": "4.11.0",
+    "numpy": "1.26.4"
+  },
+  "configuration": {
+    "source": "synthetic",
+    "video": null,
+    "input_content": "blank",
+    "inference": "MediaPipe BlazePose Full",
+    "mediapipe": "0.10.21",
+    "model_complexity": 1,
+    "display": "headless HUD rendering",
+    "requested_resolution": [
+      640,
+      480
+    ],
+    "requested_source_fps": 60,
+    "negotiated_capture": {
+      "width": 640,
+      "height": 480,
+      "fps": 60
+    },
+    "min_cutoff": 1,
+    "beta": 5.0,
+    "d_cutoff": 1,
+    "coordinate_frame": "body",
+    "replay_resize": "preserve aspect ratio with letterboxing",
+    "recorded_replay_loops": 0
+  },
+  "timing_scope": "Host camera/replay read completion to completed HUD rendering with headless display sink; excludes sensor exposure, actual screen presentation and model initialization",
+  "submission_performance": {
+    "passed": false,
+    "checks": {
+      "real_local_model": true,
+      "physical_webcam": false,
+      "desktop_display": false,
+      "at_least_10_seconds": false,
+      "pose_coverage_at_least_80_percent": false,
+      "numeric_coverage_at_least_50_percent": false,
+      "achieved_fps_at_least_30": true
+    },
+    "scope": "Desktop performance evidence only; clinical accuracy requires paired references"
+  }
+}

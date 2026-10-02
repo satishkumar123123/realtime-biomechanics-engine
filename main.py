@@ -5,6 +5,7 @@ from contextlib import ExitStack
 import logging
 import os
 import sys
+import threading
 import time
 
 import cv2
@@ -191,12 +192,18 @@ class HUDRenderer:
 
 
 class OpenCVDisplay:
-    """Own the desktop window and event pump; instantiate only outside headless tests."""
+    """Own HighGUI on Python's main thread; headless sinks need no GUI thread."""
 
     def __init__(self):
         self._opened = False
 
+    @staticmethod
+    def _check_thread():
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError('OpenCV desktop display must run on the main thread')
+
     def submit(self, frame):
+        self._check_thread()
         if not self._opened:
             if sys.platform.startswith('linux') and not (os.environ.get('DISPLAY')
                                                         or os.environ.get('WAYLAND_DISPLAY')):
@@ -208,6 +215,7 @@ class OpenCVDisplay:
     def poll_key(self):
         if not self._opened:
             return -1
+        self._check_thread()
         key = cv2.waitKey(1)
         try:
             if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
@@ -218,6 +226,7 @@ class OpenCVDisplay:
 
     def close(self):
         if self._opened:
+            self._check_thread()
             try:
                 cv2.destroyWindow(WINDOW)
             except cv2.error:

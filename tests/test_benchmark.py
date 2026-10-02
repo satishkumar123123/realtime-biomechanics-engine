@@ -1,5 +1,6 @@
 """Benchmark statistics, source pacing, CLI limits and pipeline integration."""
 import json
+from contextlib import ExitStack
 from pathlib import Path
 import tempfile
 import unittest
@@ -56,7 +57,10 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_mock_full_numeric_pipeline_and_json_serialization(self):
         args = build_parser().parse_args(['--mock-pose', '--frames', '5', '--warmup', '2'])
-        report = run_benchmark(args)
+        with ExitStack() as guards:
+            for name in ('namedWindow', 'imshow', 'waitKey', 'destroyWindow', 'destroyAllWindows'):
+                guards.enter_context(patch(f'cv2.{name}', side_effect=AssertionError('Headless GUI call')))
+            report = run_benchmark(args)
         self.assertEqual(report['measured_frames'], 5)
         self.assertEqual(report['frames_with_pose'], 5)
         self.assertEqual(report['mean_reliable_metrics'], 12)

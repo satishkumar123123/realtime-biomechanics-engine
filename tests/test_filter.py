@@ -103,6 +103,36 @@ class OneEuroTests(unittest.TestCase):
         np.testing.assert_array_equal(smoother([5, 2, 7], 0.2), [5, 2, 7])
         np.testing.assert_allclose(smoother.cutoff, [1, 1, 1])
 
+    def test_none_frame_clears_history_even_with_nonincreasing_time(self):
+        for timestamp in (1.2, 1.1, 1.0):
+            with self.subTest(timestamp=timestamp):
+                smoother = OneEuroFilter(beta=5)
+                smoother(np.zeros((33, 3)), 1)
+                smoother(np.ones((33, 3)), 1.1)
+                missing = smoother(None, timestamp)
+                self.assertEqual(missing.shape, (33, 3))
+                self.assertTrue(np.isnan(missing).all())
+                self.assertTrue(np.isnan(smoother.cutoff).all())
+                recovered = smoother(np.full((33, 3), 10), 1.3)
+                np.testing.assert_array_equal(recovered, np.full((33, 3), 10))
+                np.testing.assert_array_equal(smoother.cutoff, np.ones((33, 3)))
+
+    def test_initial_none_does_not_commit_shape_or_timestamp(self):
+        smoother = OneEuroFilter()
+        self.assertTrue(np.isnan(smoother(None, 10)))
+        self.assertIsNone(smoother.cutoff)
+        with self.assertRaises(ValueError):
+            smoother(None, np.nan)
+        np.testing.assert_array_equal(smoother([1, 2, 3], 0), [1, 2, 3])
+
+    def test_none_component_reinitializes_independently(self):
+        smoother = OneEuroFilter()
+        smoother([1, 2], 0)
+        output = smoother([None, 2], .1)
+        self.assertTrue(np.isnan(output[0]))
+        self.assertEqual(output[1], 2)
+        np.testing.assert_array_equal(smoother([10, 2], .2), [10, 2])
+
     def test_visibility_mask_broadcasts_per_landmark(self):
         smoother = OneEuroFilter()
         mask = np.ones((33, 1), dtype=bool)
@@ -173,6 +203,13 @@ class BoneLengthTests(unittest.TestCase):
         self.assertIsNone(self.checker.check(self.points)['L_Shin'].consistent)
         self.points[28] = self.points[26]
         self.assertIsNone(self.checker.check(self.points)['R_Shin'].consistent)
+
+    def test_malformed_confidence_is_unavailable_without_warning(self):
+        verdicts = self.checker.check(self.points, np.ones((33, 1)))
+        self.assertTrue(all(result.consistent is None for result in verdicts.values()))
+        with self.assertRaises(ValueError):
+            self.checker.calibrate(self.points, np.ones((33, 1)))
+        self.assertTrue(all(result.consistent for result in self.checker.check(self.points).values()))
 
     def test_rigid_translation_rotation_preserves_verdicts(self):
         rotated = self.points @ np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]]) + (4, 3, -2)

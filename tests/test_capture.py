@@ -1,8 +1,10 @@
 """Hardware-independent lifecycle and concurrency tests (stdlib unittest)."""
 import threading
+import gc
 from concurrent.futures import ThreadPoolExecutor
 import time
 import unittest
+import weakref
 from unittest.mock import patch
 
 import numpy as np
@@ -131,6 +133,65 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(self.camera.released, 1)
         self.capture.start()
         self.assertIsNotNone(self.capture.wait_for_frame())
+
+    def test_interrupted_start_after_launch_releases_once_on_worker(self):
+        actual_start = threading.Thread.start
+        launched, release_threads = [], []
+        original_release = self.camera.release
+        def release():
+            release_threads.append(threading.current_thread())
+            original_release()
+        def interrupted_start(worker):
+            actual_start(worker)
+            launched.append(worker)
+            raise RuntimeError('Interrupted after launch')
+        self.camera.release = release
+        try:
+            with patch('core.capture.threading.Thread.start', interrupted_start):
+                with self.assertRaisesRegex(RuntimeError, 'Interrupted after launch'):
+                    self.capture.start()
+            self.capture.stop()
+            self.assertFalse(launched[0].is_alive())
+            self.assertIsNone(self.capture._thread)
+            self.assertEqual(self.camera.released, 1)
+            self.assertEqual(release_threads, launched)
+        finally:
+            self.capture.stop()
+            for worker in launched:
+                worker.join(2)
+
+    def test_failure_diagnostics_do_not_retain_native_backend(self):
+        for fail_release in (False, True):
+            with self.subTest(fail_release=fail_release):
+                references = []
+                class FailingCamera(FakeCamera):
+                    def read(self):
+                        try:
+                            raise ValueError('Driver cause')
+                        except ValueError as cause:
+                            raise OSError('Driver failed') from cause
+                    def release(self):
+                        super().release()
+                        if fail_release:
+                            raise OSError('Release failed')
+                def factory(*args):
+                    camera = FailingCamera()
+                    references.append(weakref.ref(camera))
+                    return camera
+                capture = VideoCaptureAsync(capture_factory=factory).start()
+                try:
+                    capture.wait_for_frame(timeout=2)
+                finally:
+                    if fail_release:
+                        with self.assertRaises(OSError):
+                            capture.stop()
+                    else:
+                        capture.stop()
+                gc.collect()
+                self.assertIsNone(references[0]())
+                self.assertIsInstance(capture.error, OSError)
+                self.assertIsNone(capture.error.__traceback__)
+                self.assertIsNone(capture.error.__cause__.__traceback__)
 
     def test_backend_release_failure_is_reported_without_daemon_crash(self):
         camera = FakeCamera()

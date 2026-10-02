@@ -1,5 +1,6 @@
 """Benchmark the same capture/inference/filter/angle/HUD loop as the desktop app."""
 import argparse
+from importlib.metadata import version
 import json
 import math
 import os
@@ -258,8 +259,7 @@ def run_benchmark(args):
     report = recorder.summary()
     model_version = 'mock'
     if not args.mock_pose:
-        import mediapipe
-        model_version = mediapipe.__version__
+        model_version = version('mediapipe')
     report.update({
         'schema_version': 2, 'hardware': hardware_info(),
         'configuration': {

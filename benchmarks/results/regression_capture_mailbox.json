@@ -1,0 +1,18 @@
+{
+  "source": "synthetic",
+  "requested_fps": 60,
+  "negotiated_settings": {
+    "width": 640,
+    "height": 480,
+    "fps": 60
+  },
+  "observed_frames": 300,
+  "ingested_frames_in_interval": 299,
+  "ingestion_fps": 60.00274685752059,
+  "consumer_fps": 60.00274685752059,
+  "superseded_frames": 0,
+  "mailbox_ms_mean": 0.0029410769230769234,
+  "mailbox_ms_p99": 0.004388739999999467,
+  "mailbox_ms_max": 0.125677,
+  "host_frame_age_ms_p99": 1.860971959999991
+}

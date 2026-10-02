@@ -1,5 +1,6 @@
 """Static-hold data quality, paired errors, rejection accounting and CLI tests."""
 import csv
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import tempfile
@@ -8,7 +9,9 @@ from unittest.mock import patch
 
 from core.validation import (FIELDS, HoldCollector, analyze_csv, analyze_rows,
                              append_hold, markdown_report)
-from main import PoseProcessor
+from core.capture import FrameSnapshot
+from main import PoseProcessor, run_pipeline
+from tests.test_pipeline import MockCapture, MockPose, pose_result
 from validation import main
 
 
@@ -194,6 +197,32 @@ class ValidationTests(unittest.TestCase):
                                '--view', 'front', '--reference', '44', '--csv', str(path), '--headless'])
             self.assertEqual(status, 0)
             self.assertEqual(analyze_csv(path)['groups'][0]['mae_deg'], 1)
+
+    def test_headless_collection_runs_full_loop_without_highgui(self):
+        class ClockedCapture(MockCapture):
+            actual_settings = {'width': 640, 'height': 480, 'fps': 60}
+            def wait_for_frame(self, *args, **kwargs):
+                sample = super().wait_for_frame(*args, **kwargs)
+                # Deterministic acquisition clock for hold-window logic only;
+                # these fixtures never become performance/clinical evidence.
+                return FrameSnapshot(sample.sequence, sample.sequence * 20_000_000, sample.frame)
+        capture, model = ClockedCapture(), MockPose(pose_result())
+        def run(capture, **kwargs):
+            return run_pipeline(capture, pose_factory=lambda: model, **kwargs)
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as guards:
+            for name in ('namedWindow', 'imshow', 'waitKey', 'destroyWindow', 'destroyAllWindows'):
+                guards.enter_context(patch(f'cv2.{name}', side_effect=AssertionError('Headless GUI call')))
+            guards.enter_context(patch('validation.VideoCaptureAsync', return_value=capture))
+            guards.enter_context(patch('validation.run_pipeline', side_effect=run))
+            guards.enter_context(patch('builtins.print'))
+            path = Path(directory)/'synthetic_test_only.csv'
+            status = main(['collect', '--participant', 'TEST_ONLY', '--joint', 'L_Elbow_Flex',
+                           '--view', 'front', '--reference', '0', '--csv', str(path),
+                           '--seconds', '.2', '--settling', '0', '--headless'])
+            self.assertEqual(status, 0)
+            self.assertGreater(model.calls, 5)
+            self.assertTrue(capture.stopped and model.closed)
+            self.assertEqual(analyze_csv(path)['accepted_holds'], 1)
 
     def test_float_camera_dimensions_roundtrip_in_csv(self):
         collector = HoldCollector('L_Elbow_Flex', seconds=1, settling=0)
