@@ -1,0 +1,172 @@
+{
+  "measured_frames": 600,
+  "warmup_frames": 60,
+  "measured_interval_seconds": 14.817111696000211,
+  "achieved_e2e_fps": 40.42623233795939,
+  "inference": {
+    "mean_ms": 21.113235843339833,
+    "min_ms": 19.591740999658214,
+    "max_ms": 40.21738900019045,
+    "p95_ms": 23.6566576502355
+  },
+  "pipeline": {
+    "mean_ms": 32.5776796483342,
+    "min_ms": 23.510557000008703,
+    "max_ms": 52.69060999989961,
+    "p95_ms": 40.30917270001737
+  },
+  "frames_with_pose": 600,
+  "mean_reliable_metrics": 12.0,
+  "pose_coverage": 1.0,
+  "numeric_coverage": 1.0,
+  "metric_coverage": {
+    "L_Ankle_Dorsi_Plantar": 1.0,
+    "L_Elbow_Flex": 1.0,
+    "L_Hip_Flex": 1.0,
+    "L_Knee_Flex": 1.0,
+    "L_Shoulder_Abd": 1.0,
+    "L_Shoulder_Flex": 1.0,
+    "R_Ankle_Dorsi_Plantar": 1.0,
+    "R_Elbow_Flex": 1.0,
+    "R_Hip_Flex": 1.0,
+    "R_Knee_Flex": 1.0,
+    "R_Shoulder_Abd": 1.0,
+    "R_Shoulder_Flex": 1.0
+  },
+  "detected_pose_latency": {
+    "frames": 600,
+    "inference": {
+      "mean_ms": 21.113235843339833,
+      "min_ms": 19.591740999658214,
+      "max_ms": 40.21738900019045,
+      "p95_ms": 23.6566576502355
+    },
+    "pipeline": {
+      "mean_ms": 32.5776796483342,
+      "min_ms": 23.510557000008703,
+      "max_ms": 52.69060999989961,
+      "p95_ms": 40.30917270001737
+    }
+  },
+  "rolling_window": {
+    "frames": 120,
+    "fps": 40.282696066940645,
+    "inference": {
+      "mean_ms": 21.19069385836383,
+      "min_ms": 19.65552999990905,
+      "max_ms": 32.41030800018052,
+      "p95_ms": 23.865546700062623
+    },
+    "pipeline": {
+      "mean_ms": 33.114760741678616,
+      "min_ms": 23.953683999934583,
+      "max_ms": 44.45006900004955,
+      "p95_ms": 40.65802024979348
+    }
+  },
+  "mailbox": {
+    "published_intervals": 876,
+    "consumed_intervals": 599,
+    "superseded_frames": 277,
+    "overrun_events": 276,
+    "superseded_percent": 31.621004566210047,
+    "hardware_dropped_frames": null,
+    "scope": "Sequence gaps between first and last measured frames; excludes startup and tail"
+  },
+  "schema_version": 3,
+  "recorded_utc": "2026-10-03T14:17:46.245945+00:00",
+  "hardware": {
+    "os": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "logical_cpus": 9,
+    "cpu_quota_cores": 8.0,
+    "python": "3.12.14",
+    "opencv": "4.11.0",
+    "numpy": "1.26.4"
+  },
+  "configuration": {
+    "source": "recorded",
+    "video": "human_replay.avi",
+    "input_content": "augmented_single_photo_replay",
+    "inference": "MediaPipe BlazePose Full",
+    "mediapipe": "0.10.21",
+    "model_complexity": 1,
+    "display": "headless HUD rendering",
+    "requested_resolution": [
+      640,
+      480
+    ],
+    "requested_source_fps": 60.0,
+    "negotiated_capture": {
+      "width": 640,
+      "height": 480,
+      "fps": 60.0
+    },
+    "min_cutoff": 1,
+    "beta": 5.0,
+    "d_cutoff": 1,
+    "coordinate_frame": "body",
+    "replay_resize": "preserve aspect ratio with letterboxing",
+    "recorded_replay_loops": 1
+  },
+  "timing_scope": "Host camera/replay read completion to completed HUD rendering with headless display sink; excludes sensor exposure, actual screen presentation and model initialization",
+  "input_provenance": {
+    "schema_version": 1,
+    "workload_kind": "augmented_single_photo_replay",
+    "source": {
+      "url": "https://storage.googleapis.com/mediapipe-assets/pose.jpg?generation=1678737494661975",
+      "sha256": "c8a830ed683c0276d713dd5aeda28f415f10cd6291972084a40d0d8b934ed62b",
+      "upstream_manifest": "https://github.com/google-ai-edge/mediapipe/blob/v0.10.21/third_party/external_files.bzl"
+    },
+    "video": {
+      "file": "human_replay.avi",
+      "sha256": "83924aad84135617c3bde51036a55a5b43fc685a630dae97fcfca0f5858712b5",
+      "width": 640,
+      "height": 480,
+      "fps": 60,
+      "frames": 720,
+      "codec": "MJPG"
+    },
+    "recipe": {
+      "phase": "2*pi*frame_index/frame_count",
+      "translation_x_px": "12*sin(2*phase)",
+      "translation_y_px": "8*sin(phase)",
+      "image_roll_deg": "2*sin(phase)",
+      "scale": "1+0.03*sin(2*phase)",
+      "resize": "letterbox",
+      "opencv": "4.11.0"
+    },
+    "limitations": [
+      "One source photograph; no changing human articulation or subject diversity",
+      "Image-space augmentation does not establish a real webcam workload",
+      "No calibrated ground-truth joint angles accompany the photograph"
+    ]
+  },
+  "raw_samples": {
+    "file": "benchmark_frame_samples.csv",
+    "sha256": "90d7cb6ce3f396f0916ec491e242a8a0872c06ee1ca396900f0c74b725d6825d",
+    "rows": 600,
+    "columns": [
+      "sequence",
+      "capture_time",
+      "completion_time",
+      "inference_ms",
+      "pipeline_ms",
+      "pose_detected",
+      "reliable_metrics"
+    ]
+  },
+  "submission_performance": {
+    "passed": false,
+    "checks": {
+      "real_local_model": true,
+      "physical_webcam": false,
+      "desktop_display": false,
+      "at_least_10_seconds": true,
+      "pose_coverage_at_least_80_percent": true,
+      "numeric_coverage_at_least_50_percent": true,
+      "achieved_fps_at_least_30": true
+    },
+    "scope": "Desktop performance evidence only; clinical accuracy requires paired references"
+  }
+}

@@ -8,3 +8,6 @@ __pycache__/
 # Participant data and locally generated reports are opt-in publication artifacts.
 validation/data/
 validation/results/
+
+# Downloaded/generated image and replay media are reproducible from the manifest.
+benchmarks/assets/

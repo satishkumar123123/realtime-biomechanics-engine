@@ -1,0 +1,3 @@
+# Raw evidence checksums must survive checkout on Windows and Unix.
+/benchmark_frame_samples.csv text eol=lf
+/benchmarks/results/**/holds.csv text eol=lf

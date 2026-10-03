@@ -164,6 +164,7 @@ def analyze_rows(rows):
     seen = set()
     configurations = {}
     reference_methods = {}
+    reference_types = set()
     for number, row in enumerate(rows, start=2):
         try:
             hold_id = row['hold_id'].strip()
@@ -173,6 +174,10 @@ def analyze_rows(rows):
             reference = float(row['reference_deg'])
             validate_metadata(row['participant'], row['joint'], row['view'], reference,
                               row['reference_method'])
+            reference_types.add('synthetic' if row['reference_method'].strip().startswith('synthetic:')
+                                else 'supplied_reference')
+            if len(reference_types) > 1:
+                raise ValueError('Synthetic and physical/reference studies must use separate reports')
             software = (None if row['software_deg'] is None or row['software_deg'] == ''
                         else float(row['software_deg']))
             valid, total = int(row['valid_frames']), int(row['total_frames'])
@@ -240,7 +245,7 @@ def analyze_rows(rows):
                'knee': any(j.endswith('_Knee_Flex') for j in accepted_joints),
                'shoulder_or_hip_flexion': any(j.endswith(('_Shoulder_Flex', '_Hip_Flex'))
                                             for j in accepted_joints)}
-    return {'schema_version': 1, 'accepted_holds': sum(s['holds'] for s in summaries),
+    report = {'schema_version': 1, 'accepted_holds': sum(s['holds'] for s in summaries),
             'rejected_holds': len(rejected), 'groups': summaries, 'rejections': rejected,
             'required_joint_categories': covered, 'required_scope_present': all(covered.values()),
             'scope': 'Static paired holds against user-supplied measured references; '
@@ -249,6 +254,19 @@ def analyze_rows(rows):
                             'Static holds do not establish dynamic accuracy or filter phase lag',
                             'No fixed MAE acceptance threshold; report observed errors and coverage',
                             'Reference ranges, sample counts and views must be assessed with the protocol']}
+    report['validation_type'] = 'synthetic' if reference_types == {'synthetic'} else 'supplied_reference'
+    if report['validation_type'] == 'synthetic':
+        report['clinical_accuracy_established'] = False
+        report['scope'] = ('Automated synthetic landmark validation; no camera/model inference or physical '
+                           'goniometer. Error measures this simulation only, not clinical accuracy.')
+        report['limitations'] = [
+            'Analytic targets and injected noise are artificial, not measured human/model errors',
+            'Torso landmarks/visibility are supplied; detector errors and real occlusion are not modeled',
+            'Reported participant identifiers denote synthetic seeds, not human participants',
+            'Static hold medians do not quantify transient motion lag or whole-pipeline image accuracy',
+            'Physical paired-reference validation remains necessary',
+        ]
+    return report
 
 
 def analyze_csv(path):
@@ -260,9 +278,12 @@ def analyze_csv(path):
 
 
 def markdown_report(report):
-    lines = ['# Paired static-hold accuracy results', '', report['scope'], '',
+    synthetic = report.get('validation_type') == 'synthetic'
+    title = '# Simulated goniometric accuracy results' if synthetic else '# Paired static-hold accuracy results'
+    people = 'Synthetic seeds' if synthetic else 'Participants'
+    lines = [title, '', report['scope'], '',
              f"Accepted holds: {report['accepted_holds']}; rejected holds: {report['rejected_holds']}.", '',
-             '| Joint | View | Holds | Participants | Reference range (deg) | MAE (deg) | Bias (deg) | RMSE (deg) | Valid frames |',
+             f'| Joint | View | Holds | {people} | Reference range (deg) | MAE (deg) | Bias (deg) | RMSE (deg) | Valid frames |',
              '| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |']
     for row in report['groups']:
         lines.append(f"| {row['joint']} | {row['view']} | {row['holds']} | {row['participants']} | "

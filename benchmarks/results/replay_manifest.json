@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "workload_kind": "augmented_single_photo_replay",
+  "source": {
+    "url": "https://storage.googleapis.com/mediapipe-assets/pose.jpg?generation=1678737494661975",
+    "sha256": "c8a830ed683c0276d713dd5aeda28f415f10cd6291972084a40d0d8b934ed62b",
+    "upstream_manifest": "https://github.com/google-ai-edge/mediapipe/blob/v0.10.21/third_party/external_files.bzl"
+  },
+  "video": {
+    "file": "human_replay.avi",
+    "sha256": "83924aad84135617c3bde51036a55a5b43fc685a630dae97fcfca0f5858712b5",
+    "width": 640,
+    "height": 480,
+    "fps": 60,
+    "frames": 720,
+    "codec": "MJPG"
+  },
+  "recipe": {
+    "phase": "2*pi*frame_index/frame_count",
+    "translation_x_px": "12*sin(2*phase)",
+    "translation_y_px": "8*sin(phase)",
+    "image_roll_deg": "2*sin(phase)",
+    "scale": "1+0.03*sin(2*phase)",
+    "resize": "letterbox",
+    "opencv": "4.11.0"
+  },
+  "limitations": [
+    "One source photograph; no changing human articulation or subject diversity",
+    "Image-space augmentation does not establish a real webcam workload",
+    "No calibrated ground-truth joint angles accompany the photograph"
+  ]
+}

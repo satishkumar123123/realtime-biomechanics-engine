@@ -54,13 +54,25 @@ def build_parser():
     report.add_argument('--csv', type=Path, default=Path('validation/data/paired_holds.csv'))
     report.add_argument('--json', type=Path, default=Path('validation/results/accuracy.json'))
     report.add_argument('--markdown', type=Path, default=Path('validation/results/accuracy.md'))
+    simulate = commands.add_parser('simulate', help='Analytic targets with seeded noise; NOT clinical validation')
+    simulate.add_argument('--output-dir', type=Path, default=Path('benchmarks/results/simulated_accuracy'))
+    simulate.add_argument('--seed', type=int, default=20261003)
+    simulate.add_argument('--repetitions', type=int, default=3)
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        if args.command == 'collect':
+        if args.command == 'simulate':
+            from benchmarks.simulated_accuracy import simulate
+            report = simulate(args.output_dir, seed=args.seed, repetitions=args.repetitions)
+            print(f"Synthetic validation: {report['accepted_holds']} accepted / "
+                  f"{report['rejected_holds']} rejected holds; {report['frames_processed']} processed frames")
+            print(report['scope'])
+            print(f'Reports and raw holds saved: {args.output_dir}')
+            return 0 if report['required_scope_present'] else 2
+        elif args.command == 'collect':
             validate_metadata(args.participant, args.joint, args.view, args.reference, args.reference_method)
             check_csv_header(args.csv)
             collector = HoldCollector(args.joint, args.seconds, args.settling)

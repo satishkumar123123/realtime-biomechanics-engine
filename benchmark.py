@@ -1,5 +1,7 @@
 """Benchmark the same capture/inference/filter/angle/HUD loop as the desktop app."""
 import argparse
+import csv
+from datetime import datetime, timezone
 from importlib.metadata import version
 import json
 import math
@@ -15,6 +17,7 @@ import numpy as np
 
 from core.capture import VideoCaptureAsync
 from core.pose import create_pose
+from benchmarks.prepare_replay import sha256_file
 from main import OpenCVDisplay, PoseProcessor, run_pipeline
 
 
@@ -241,6 +244,19 @@ def run_benchmark(args):
         raise ValueError('--source recorded requires an existing --video file')
     if args.mock_pose and args.source != 'synthetic':
         raise ValueError('--mock-pose is only available for synthetic numeric-path tests')
+    input_manifest = getattr(args, 'input_manifest', None)
+    samples_output = getattr(args, 'samples_output', None)
+    files = [p.resolve() for p in (args.video, input_manifest, samples_output, args.output) if p is not None]
+    if len(files) != len(set(files)):
+        raise ValueError('Input video/manifest and output files must use distinct paths')
+    provenance = None
+    if input_manifest is not None:
+        if args.source != 'recorded':
+            raise ValueError('--input-manifest requires --source recorded')
+        provenance = json.loads(input_manifest.read_text(encoding='utf-8'))
+        if (not isinstance(provenance, dict) or not isinstance(provenance.get('video'), dict)
+                or provenance['video'].get('sha256') != sha256_file(args.video)):
+            raise ValueError('Replay video does not match the input manifest checksum')
     source = None
     def replay_factory(device, backend):
         nonlocal source
@@ -261,10 +277,12 @@ def run_benchmark(args):
     if not args.mock_pose:
         model_version = version('mediapipe')
     report.update({
-        'schema_version': 2, 'hardware': hardware_info(),
+        'schema_version': 3, 'recorded_utc': datetime.now(timezone.utc).isoformat(),
+        'hardware': hardware_info(),
         'configuration': {
             'source': args.source, 'video': None if args.video is None else args.video.name,
-            'input_content': 'blank' if args.source == 'synthetic' else 'user-supplied',
+            'input_content': (provenance.get('workload_kind', 'user-supplied') if provenance else
+                              'blank' if args.source == 'synthetic' else 'user-supplied'),
             'inference': 'analytic mock' if args.mock_pose else 'MediaPipe BlazePose Full',
             'mediapipe': model_version, 'model_complexity': None if args.mock_pose else 1,
             'display': 'desktop' if args.display else 'headless HUD rendering',
@@ -279,6 +297,18 @@ def run_benchmark(args):
                          + ('and UI event pump' if args.display else 'with headless display sink')
                          + '; excludes sensor exposure, actual screen presentation and model initialization'),
     })
+    if provenance is not None:
+        report['input_provenance'] = provenance
+    if samples_output is not None:
+        fields = ('sequence', 'capture_time', 'completion_time', 'inference_ms', 'pipeline_ms',
+                  'pose_detected', 'reliable_metrics')
+        samples_output.parent.mkdir(parents=True, exist_ok=True)
+        with samples_output.open('w', newline='', encoding='utf-8') as output:
+            writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore', lineterminator='\n')
+            writer.writeheader()
+            writer.writerows(recorder.records)
+        report['raw_samples'] = {'file': samples_output.name, 'sha256': sha256_file(samples_output),
+                                 'rows': len(recorder.records), 'columns': list(fields)}
     report['submission_performance'] = submission_checks(report)
     return report
 
@@ -324,6 +354,8 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', choices=('synthetic', 'recorded', 'webcam'), default='synthetic')
     parser.add_argument('--video', type=Path)
+    parser.add_argument('--input-manifest', type=Path, help='Optional checksum-verified replay provenance')
+    parser.add_argument('--samples-output', type=Path, help='Optional per-frame timing/sequence CSV')
     parser.add_argument('--camera', type=int, default=0)
     limits = parser.add_mutually_exclusive_group()
     limits.add_argument('--frames', type=int)
@@ -351,7 +383,7 @@ def main(argv=None):
         print_summary(report)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+            args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n', encoding='utf-8')
             print(f'Report saved: {args.output}')
         return 2 if args.require_human and not report['submission_performance']['passed'] else 0
     except KeyboardInterrupt:

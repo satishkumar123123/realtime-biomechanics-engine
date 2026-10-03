@@ -8,9 +8,11 @@ a translucent OpenCV diagnostics HUD.
 **Submission status:** the capture, geometry, filtering, desktop integration and
 automated benchmarking are implemented, including orientation-aware torso
 projections, static reference-pair collection and accuracy reporting. The test
-suite passes. Reproducible synthetic-input reports are included. Actual
-detected-human desktop throughput and manual-reference accuracy remain unmeasured;
-no participant readings or real-camera performance results have been invented.
+suite passes. The repo includes an executed **600-frame real-model human-photo
+replay benchmark** and **54 known-target synthetic validation holds**, with raw
+CSVs, provenance, JSON reports and populated tables below. Physical webcam/desktop
+throughput and manual-reference accuracy have not been measured; the automated
+evidence is explicitly separated from those outstanding rubric requirements.
 See the [final regression audit](docs/REGRESSION_AUDIT.md) for the latest fixes,
 strict test results and headless smoke measurements.
 
@@ -52,7 +54,7 @@ not lossless video recording or a guarantee of zero camera/driver frame drops.
 | `benchmark.py` | Synthetic/recorded/webcam runs, full-run statistics, JSON export |
 | `core/validation.py`, `validation.py` | Static paired holds, quality checks, per-joint/view accuracy reports |
 | `tests/` | Geometry, signal, lifecycle, integration and benchmark regression tests |
-| `benchmarks/results/` | Reproducible measured benchmark reports |
+| `benchmarks/` | Replay preparation, synthetic validation, raw reports and evidence verification |
 
 ## Technology choices
 
@@ -389,8 +391,9 @@ collection/reporting. Lifecycle regressions include interrupted thread startup,
 single-owner release and backend garbage collection after chained driver failures.
 Headless benchmark/validation tests prohibit every HighGUI call, and native display
 tests cover main-thread enforcement and event-pump failure cleanup.
-See the [final regression audit](docs/REGRESSION_AUDIT.md)
-for the complete test count and measured evidence.
+The 3 October data/tooling update passes **126 tests and 137 subtests** with
+`-W error`. The [2 October regression audit](docs/REGRESSION_AUDIT.md) records
+the preceding lifecycle/numerical audit and its historical test count.
 
 ## Benchmark definitions and measured results
 
@@ -410,55 +413,146 @@ Overrun events count gaps greater than one. Startup, warmup and unconsumed tail
 frames are excluded. OpenCV does not expose reliable hardware/driver drop counts;
 those are reported as unknown, not zero.
 
-### Historical reproducible measured run
+### Executed automated replay benchmark — 3 October 2026
 
-Command: `python benchmark.py --frames 300 --output benchmarks/results/synthetic_headless.json`.
-Report: [synthetic_headless.json](benchmarks/results/synthetic_headless.json).
+This run uses **real local MediaPipe BlazePose Full inference** on a generated
+720-frame human-photo replay. The official MediaPipe test photograph is
+letterboxed and given small cyclic image translations, scale changes and roll.
+It exercises detected-person tracking, world-coordinate filtering, all twelve
+angles and the real HUD renderer. It is **one augmented photograph**, not changing
+human articulation, a physical webcam run or visible desktop presentation.
 
-| Environment | Measured configuration |
+| Environment / setting | Recorded value |
 | --- | --- |
-| OS | Linux 6.18.44 x86_64, glibc 2.39 |
-| CPU | AMD EPYC 9V74 80-Core Processor; container reports 9 logical CPUs and 8-core CPU quota |
+| OS | Linux-6.18.44-x86_64-with-glibc2.39 |
+| CPU | AMD EPYC 9V74 80-Core Processor |
+| Allocation | 8-core container quota; 9 logical CPUs visible |
 | Runtime | Python 3.12.14; MediaPipe 0.10.21; OpenCV 4.11.0; NumPy 1.26.4 |
-| Input | Synthetic blank frames, 640x480, paced at 60 FPS |
-| Display | Headless, real OpenCV HUD rendering |
-| Run | 30 warmup + 300 measured frames; 5.096-second measured interval |
-| Pose coverage | 0/300 detected poses; 0/12 mean reliable metrics |
-| Achieved FPS | **58.68 FPS** |
-| Mailbox | 4 superseded frames / 303 publication intervals; 4 overrun events; 1.32% |
+| Input resolution / pacing | 640x480; generated 60 Hz MJPEG replay; no physical camera |
+| Model | BlazePose Full, complexity 1, CPU/XNNPACK, built-in smoothing and segmentation disabled |
+| Custom processing | One-Euro 1 Hz / beta 5 / derivative cutoff 1 Hz; body coordinates; visibility >0.65 |
+| Display | Headless sink with actual OpenCV wireframe/HUD rendering |
+| Sample | 60 warmup + **600 measured frames**; 14.817 s measured interval |
+| Coverage | 600/600 poses; 100% numeric coverage; 12.00/12 mean reliable metrics |
+| Achieved end-to-end FPS | **40.43 FPS** |
+| Mailbox | 277 superseded frames / 876 publication intervals; 276 overrun events; 31.62% |
+| Hardware/driver drops | Unknown; no physical-camera driver measurement |
+| Replay loops during whole run | 1 |
 
-| Latency | Mean (ms) | Min (ms) | Max (ms) | P95 (ms) |
+| Measured latency | Mean (ms) | Min (ms) | Max (ms) | P95 (ms) |
 | --- | ---: | ---: | ---: | ---: |
-| Real model inference | 13.638 | 11.832 | 39.246 | 16.724 |
-| Host end-to-end pipeline | 18.074 | 14.112 | 42.567 | 27.986 |
+| Real model inference | 21.113 | 19.592 | 40.217 | 23.657 |
+| Host end-to-end pipeline | 32.578 | 23.511 | 52.691 | 40.309 |
 
-This run executes the missing-pose path; it does not establish the cost or accuracy
-of detected-human landmark tracking, filtering and valid angle computation.
-The explicit mock mode verifies that numeric path, while recorded human video
-and a target webcam are needed for representative production measurements.
+The 60 Hz producer is faster than the consumer on this host; the latest-frame
+mailbox intentionally supersedes older frames. Its nonzero overrun count is part
+of the result. End-to-end latency begins **after replay decoding/read completion**;
+source generation, decoding, sensor exposure and actual screen presentation are
+outside that clock interval. This single run is not a multi-run confidence bound.
 
-### Required target-machine performance evidence
+- [Exact benchmark results](benchmark_results.json), including the final 120-frame window.
+- [All 600 per-frame timing/sequence records](benchmark_frame_samples.csv).
+- [Input provenance, source/video SHA-256 and augmentation recipe](benchmarks/results/replay_manifest.json).
 
-| Evaluation workload | Hardware/OS status | Resolution | Report separately | Required FPS |
-| --- | --- | --- | --- | --- |
-| Detected-human desktop webcam | Record actual target machine OS/CPU | 640x480 by default | Inference and pipeline mean/P95 | >=30; 60 preferred where supported |
+Reproduce from the repository root after dependency installation:
 
-The assignment does not mandate fixed inference/pipeline milliseconds. Report
-actual results. Updated software benchmark reports are linked in
-[COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md); they remain synthetic/headless
-evidence, not proof of the required target-machine human webcam performance.
+```bash
+python -m benchmarks.prepare_replay --download
+python -W error benchmark.py --source recorded --video benchmarks/assets/human_replay.avi --input-manifest benchmarks/results/replay_manifest.json --frames 600 --warmup 60 --fps 60 --samples-output benchmark_frame_samples.csv --output benchmark_results.json
+```
 
-Repeat three runs on the target machine with the same source, warmup, model and
-filter settings. Save JSON reports, pose coverage and mailbox counts alongside
-hardware/OS details. Compare means and P95 values; avoid selecting only the best
-run or mixing mock/headless results with desktop-camera measurements.
+The first command downloads the checksum-pinned public image once and generates
+local media. Subsequent generation can omit `--download`; model inference is
+fully local. Downloaded/generated images and videos are excluded from git; the
+raw measurement dataset and recipe are committed. Codec versions may produce a
+different video hash when regenerated; benchmark verifies the paired manifest.
 
-## Accuracy validation methodology
+The earlier [blank-input report](benchmarks/results/synthetic_headless.json) and
+[regression measurements](docs/REGRESSION_AUDIT.md) remain historical smoke results.
+The current person-containing replay gives more useful model timing than a blank
+frame, while still lacking actual human-motion and desktop-camera conditions.
+The strict desktop evidence checks correctly remain false for `physical_webcam`
+and `desktop_display`. Repeat measurements on the target machine using
+`--source webcam --display --seconds 30 --require-human`; preserve every run,
+configuration, coverage and mailbox count instead of selecting only the best run.
 
-**Clinical validation is pending.** Synthetic geometry tests validate mathematical
-behavior, not anatomical landmark accuracy. The following is a proposed
-validation protocol using a standard manual 360-degree plastic baseline
-goniometer operated by a trained assessor; it has not been conducted.
+## Accuracy validation and measured simulated results
+
+### Executed goniometric simulation — 3 October 2026
+
+Known targets are generated by **independent forward kinematics**, using metric
+segment lengths and commanded joint rotations. These landmarks pass through the
+same `PoseProcessor`, visibility gating, One-Euro filtering, body-frame geometry
+and static-hold validation tooling used by the application. This experiment
+**bypasses image capture and MediaPipe inference**; it measures the specified
+geometry/noise/filter simulation, not model landmark error or clinical accuracy.
+Its targets do not annotate the photograph used for the performance benchmark.
+
+Protocol: seed `20261003`, both sides, three repeated holds per target/view,
+60 Hz timestamps, a 0.5-second transition inside one second of excluded settling,
+then two measured seconds per hold. Elbow/knee use a 90-degree subject yaw so the
+flexion motion lies in the camera image plane. Shoulder flexion uses 0- and
+45-degree yaw, retaining a camera-depth component. The camera axes stay fixed.
+Camera-axis Gaussian coordinate noise has standard deviations **3/3/10 mm** in
+X/Y/Z, with **6 mm, 9 Hz** depth flicker and four low-confidence frames per hold.
+These are declared artificial stress parameters, not fitted MediaPipe error.
+Filters reset between holds; missing keypoints exercise the usual reacquisition
+path. Visible torso anchors are synthesized, not estimated from an image.
+
+Executed **9,774 processor frames**, **54 accepted / 0 rejected holds**.
+Each hold contributes one filtered median; the table's measured angle is the mean
+of those medians. MAE/Bias/RMSE are computed from individual hold errors, not from
+the difference between the two aggregate means. Full precision, each side/view
+and rejection accounting remain in the raw/report files.
+
+| Joint | Expected target (deg) | Mean measured (deg) | Holds | MAE (deg) | Bias (deg) | RMSE (deg) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Elbow flexion | 0 | 1.1427 | 6 | 1.1427 | 1.1427 | 1.1761 |
+| Elbow flexion | 90 | 89.9872 | 6 | 0.1116 | -0.0128 | 0.1367 |
+| Elbow flexion | 135 | 135.0457 | 6 | 0.0469 | 0.0457 | 0.0579 |
+| Knee flexion | 0 | 0.7333 | 6 | 0.7333 | 0.7333 | 0.7415 |
+| Knee flexion | 90 | 89.9495 | 6 | 0.0866 | -0.0505 | 0.1046 |
+| Shoulder flexion | 45 | 45.0171 | 12 | 0.0856 | 0.0171 | 0.1007 |
+| Shoulder flexion | 90 | 89.9461 | 12 | 0.1328 | -0.0539 | 0.1659 |
+
+| Simulated group | Holds | MAE (deg) | Bias (deg) | RMSE (deg) |
+| --- | ---: | ---: | ---: | ---: |
+| In-plane elbow/knee | 30 | 0.4242 | 0.3717 | 0.6270 |
+| Out-of-plane shoulder | 24 | 0.1092 | -0.0184 | 0.1373 |
+
+The unsigned elbow/knee estimator has a positive noise floor at straight neutral,
+which contributes to the larger in-plane aggregate here. The small shoulder error
+reflects this particular symmetric noise model, visible synthetic torso and
+static median averaging; it does **not** show that monocular out-of-plane anatomy
+is more accurate. Learned landmark bias, perspective/model failures, clothing,
+true self-occlusion, subject variability and manual-reference uncertainty are
+not reproduced. No human participants or manual goniometer readings are present.
+
+- [Raw per-hold reference/measurement pairs](benchmarks/results/simulated_accuracy/holds.csv).
+- [Full synthetic accuracy JSON](benchmarks/results/simulated_accuracy/accuracy.json).
+- [Populated Goniometric Accuracy Report](benchmarks/results/simulated_accuracy/accuracy.md).
+
+```bash
+python -W error validation.py simulate --seed 20261003 --repetitions 3 --output-dir benchmarks/results/simulated_accuracy
+python -W error -m benchmarks.verify_results
+```
+
+The verification command recomputes FPS, latency distributions, rolling windows,
+mailbox counts and synthetic MAE/Bias/RMSE from the committed CSVs and checks their
+hashes. It needs no webcam, GUI, model inference or media download. Raw CSV files
+preserve LF line endings on Windows and Unix for stable hashes. Repeating the
+simulation reproduces numerical results for the same runtime/seed; timestamps
+and the checksum containing those timestamps will change. Rows are marked
+`synthetic:` in their reference method, and the reporting tool refuses to combine
+synthetic and physical/reference studies into one accuracy report.
+
+### Physical manual-goniometer protocol
+
+The automated evidence above is populated and reproducible. The assignment's
+physical desktop-camera run and paired manual-reference study have **not been
+performed**, so full physical/clinical rubric completion is not claimed. Conduct
+the following protocol with a standard manual 360-degree plastic baseline
+goniometer operated by a trained assessor:
 
 1. Record participant characteristics, joint/side, clothing, lighting, camera
    distance/orientation, model/filter settings and chosen measurement positions.
@@ -489,12 +583,6 @@ goniometer operated by a trained assessor; it has not been conducted.
 Software signs must be matched to the reference before comparison. Dynamic
 accuracy/phase lag requires a synchronized reference motion system; a static
 manual goniometer protocol cannot establish it.
-
-| Required validation | Measured MAE | Evidence status |
-| --- | --- | --- |
-| Elbow flexion/extension | Not measured | Paired reference holds needed |
-| Knee flexion/extension | Not measured | Paired reference holds needed |
-| Shoulder or hip flexion/extension | Not measured | Paired reference holds in documented views needed |
 
 The assignment explicitly has **no fixed error threshold**. Report observed
 error, coverage, procedure and limitations. Earlier illustrative 3.5-7.5-degree
@@ -583,5 +671,5 @@ matrix, corrected defects, repeated test evidence and unresolved real-world
 validation gaps.
 The subsequent [completion report](docs/COMPLETION_REPORT.md) records orientation,
 tuning, validation tooling and benchmark evidence added after that audit.
-The latest [assignment compliance check](docs/ASSIGNMENT_CHECK.md) maps the original
+The [assignment compliance check](docs/ASSIGNMENT_CHECK.md) maps the original
 requirements to current code and clearly identifies the two physical evidence gaps.

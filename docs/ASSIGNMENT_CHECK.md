@@ -7,6 +7,11 @@ The [2 October regression audit](REGRESSION_AUDIT.md) supersedes this report's
 historical test counts and protobuf warning status. The physical-measurement
 evidence gaps below remain open.
 
+On 3 October, the README gained a 600-frame real-model augmented-photo replay
+benchmark and 54 executed synthetic reference holds with raw data and verification
+commands. These supersede the blank-only automated evidence available when this
+report was written. They do not close the physical webcam/manual-reference gaps.
+
 **Assessment:** the implementation covers the required software scope. Complete
 assignment compliance still requires actual human desktop performance and paired
 reference accuracy results. Tools and a protocol are available for both; the
