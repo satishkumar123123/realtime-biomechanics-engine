@@ -110,7 +110,8 @@ class OrientationTests(unittest.TestCase):
             pose_world_landmarks=SimpleNamespace(landmark=[
                 SimpleNamespace(x=x, y=y, z=z) for x, y, z in points]),
             pose_landmarks=SimpleNamespace(landmark=[
-                SimpleNamespace(visibility=.5 if i == 12 else 1) for i in range(33)]))
+                SimpleNamespace(x=.5, y=.5, visibility=.5 if i == 12 else 1)
+                for i in range(33)]))
         processor = PoseProcessor()
         self.assertEqual(processor.coordinate_frame, 'body')
         self.assertEqual(processor.filter.beta, 5)

@@ -140,6 +140,102 @@ class PipelineTests(unittest.TestCase):
         metrics, _ = processor.process(pose_result(), .3)
         self.assertAlmostEqual(metrics['L_Elbow_Flex'], 0, delta=.01)
 
+    def test_offscreen_or_nonfinite_image_landmarks_invalidate_only_affected_angles(self):
+        for axis, value in (('x', -0.01), ('x', 1.01), ('y', -0.01),
+                            ('y', 1.01), ('x', np.nan), ('y', np.inf)):
+            with self.subTest(axis=axis, value=value):
+                processor = PoseProcessor()
+                processor.process(pose_result(), 0)
+                results = pose_result()
+                setattr(results.pose_landmarks.landmark[15], axis, value)
+                metrics, reasons = processor.process(results, .02)
+                self.assertIsNone(metrics['L_Elbow_Flex'])
+                self.assertEqual(reasons['L_Elbow_Flex'], 'Outside camera view')
+                self.assertIsNotNone(metrics['R_Elbow_Flex'])
+                self.assertIsNotNone(metrics['L_Knee_Flex'])
+                self.assertTrue(np.isnan(processor.filter._filtered[15]).all())
+                # Reacquisition starts at the current bend, without the old wrist.
+                results = pose_result()
+                results.pose_world_landmarks.landmark[15].y = -.3
+                results.pose_world_landmarks.landmark[15].z = -.3
+                metrics, _ = processor.process(results, .04)
+                self.assertAlmostEqual(metrics['L_Elbow_Flex'], 90)
+
+    def test_outside_torso_anchor_invalidates_body_frame_but_not_visible_triplets(self):
+        results = pose_result()
+        results.pose_landmarks.landmark[12].x = 1.1
+        metrics, reasons = PoseProcessor().process(results, 0)
+        self.assertIsNone(metrics['L_Shoulder_Flex'])
+        self.assertEqual(reasons['L_Shoulder_Flex'], 'Torso frame unavailable')
+        self.assertEqual(reasons['R_Shoulder_Flex'], 'Outside camera view')
+        self.assertIsNotNone(metrics['L_Elbow_Flex'])
+        self.assertIsNotNone(metrics['R_Knee_Flex'])
+
+    def test_capture_gap_reinitializes_filter_before_changed_pose(self):
+        processor = PoseProcessor()
+        processor.process(pose_result(), 0)
+        results = pose_result()
+        results.pose_world_landmarks.landmark[15].y = -.3
+        results.pose_world_landmarks.landmark[15].z = -.3
+        metrics, _ = processor.process(results, .5)
+        self.assertAlmostEqual(metrics['L_Elbow_Flex'], 90)
+
+    def test_stalled_camera_clears_display_once_and_recovers_without_counting_warning_frames(self):
+        for repeated in (False, True):
+            with self.subTest(repeated=repeated):
+                clock = SimpleNamespace(now=10.0)
+                cap, model, display = MockCapture(), MockPose(pose_result()), HeadlessDisplay()
+                frames = iter(((.01, 1), (.30, 1 if repeated else None),
+                               (.05, 1 if repeated else None), (.05, 2)))
+                def next_frame(*args, **kwargs):
+                    elapsed, sequence = next(frames)
+                    clock.now += elapsed
+                    if sequence is None:
+                        return None
+                    return FrameSnapshot(sequence, int(clock.now*1e9),
+                                         np.zeros((480, 640, 3), dtype=np.uint8))
+                cap.wait_for_frame = next_frame
+                rendered, records = [], []
+                class Renderer:
+                    def render(self, frame, result, metrics, reasons, diagnostics):
+                        rendered.append((result, dict(metrics), dict(reasons), dict(diagnostics)))
+                        return frame
+                with patch('main.time.perf_counter', side_effect=lambda: clock.now):
+                    summary = run_pipeline(cap, lambda: model, display, renderer=Renderer(),
+                                           max_frames=2, on_frame=records.append)
+                self.assertEqual(display.frames, 3)
+                self.assertEqual(model.calls, 2)
+                self.assertEqual(summary['processed_frames'], 2)
+                self.assertEqual(len(records), 2)
+                self.assertEqual(summary['diagnostics']['window_frames'], 2)
+                self.assertIsNone(rendered[1][0])
+                self.assertTrue(all(v is None for v in rendered[1][1].values()))
+                self.assertEqual(set(rendered[1][2].values()), {'Camera frame stale'})
+                self.assertEqual(rendered[1][3]['fps'], 0)
+                self.assertTrue(all(v is not None for v in rendered[2][1].values()))
+                self.assertTrue(cap.stopped and model.closed and display.closed)
+
+    def test_delayed_inference_cannot_publish_stale_numeric_values(self):
+        clock = SimpleNamespace(now=10.0)
+        cap, model, display = MockCapture(), MockPose(pose_result()), HeadlessDisplay()
+        cap.wait_for_frame = lambda *a, **k: FrameSnapshot(
+            1, int(clock.now*1e9), np.zeros((480, 640, 3), dtype=np.uint8))
+        process = model.process
+        def delayed(rgb):
+            result = process(rgb)
+            clock.now += .3
+            return result
+        model.process = delayed
+        records = []
+        with patch('main.time.perf_counter', side_effect=lambda: clock.now):
+            summary = run_pipeline(cap, lambda: model, display, max_frames=1,
+                                   on_frame=records.append)
+        self.assertEqual(summary['processed_frames'], 1)
+        self.assertAlmostEqual(records[0]['inference_ms'], 300)
+        self.assertEqual(records[0]['reliable_metrics'], 0)
+        self.assertTrue(all(v is None for v in records[0]['metrics'].values()))
+        self.assertEqual(set(records[0]['reasons'].values()), {'Camera frame stale'})
+
     def test_reset_and_exit_controls(self):
         for key in (ord('q'), 27):
             with self.subTest(key=key):

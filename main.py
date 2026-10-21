@@ -19,6 +19,8 @@ from core.pose import create_pose
 
 LOGGER = logging.getLogger(__name__)
 WINDOW = 'Real-Time Biomechanics'
+# Freshness heuristic, not a clinical accuracy bound or the 30 FPS acceptance gate.
+MAX_TRACKING_GAP_SECONDS = 0.25
 METRIC_ROWS = (
     ('Elbow_Flex', 'Elbow Flex', (11, 13, 15)),
     ('Knee_Flex', 'Knee Flex', (23, 25, 27)),
@@ -27,7 +29,7 @@ METRIC_ROWS = (
     ('Hip_Flex', 'Hip Flex', (11, 23, 25)),
     ('Ankle_Dorsi_Plantar', 'Ankle D/P', (25, 27, 31)),
 )
-# BlazePose wireframe edges; normalized image landmarks are used for display only.
+# BlazePose wireframe edges; angle geometry uses world coordinates, not image XY.
 POSE_CONNECTIONS = ((11, 12), (11, 13), (13, 15), (15, 17), (15, 19),
                     (15, 21), (17, 19), (12, 14), (14, 16), (16, 18),
                     (16, 20), (16, 22), (18, 20), (11, 23), (12, 24),
@@ -39,6 +41,13 @@ POSE_CONNECTIONS = ((11, 12), (11, 13), (13, 15), (15, 17), (15, 19),
 
 class CameraUnavailable(RuntimeError):
     """Camera disconnected, capture stopped, or no frame arrived in time."""
+
+
+def unavailable_metrics(reason):
+    """Invalidate every displayed value without carrying over a previous pose."""
+    metrics = {f'{side}_{suffix}': None for side in ('L', 'R')
+               for suffix, _, _ in METRIC_ROWS}
+    return metrics, dict.fromkeys(metrics, reason)
 
 
 class Diagnostics:
@@ -85,26 +94,42 @@ class PoseProcessor:
         self.filter = OneEuroFilter(min_cutoff, beta, d_cutoff)
         self.coordinate_frame = coordinate_frame
         self.reset_count = 0
+        self._last_timestamp = None
 
     def reset(self):
         self.filter.reset()
+        self._last_timestamp = None
         self.reset_count += 1
 
     def process(self, results, timestamp):
+        timestamp = float(timestamp)
+        if not np.isfinite(timestamp):
+            raise ValueError('timestamp must be finite monotonic seconds')
+        if (self._last_timestamp is not None
+                and timestamp - self._last_timestamp > MAX_TRACKING_GAP_SECONDS):
+            self.reset()  # No missing-pose callback occurs while a camera is stalled.
         world = getattr(results, 'pose_world_landmarks', None)
         image = getattr(results, 'pose_landmarks', None)
         valid_pose = (world is not None and image is not None
                       and len(world.landmark) == 33 and len(image.landmark) == 33)
         if valid_pose:
-            points = np.array([(p.x, p.y, p.z) for p in world.landmark], dtype=float)
-            visibility = np.array([p.visibility for p in image.landmark], dtype=float)
-            visible = (np.isfinite(visibility) & (visibility > 0.65) & (visibility <= 1)
-                       & np.all(np.isfinite(points), axis=1))
+            points = np.array([tuple(getattr(p, axis, np.nan) for axis in ('x', 'y', 'z'))
+                               for p in world.landmark], dtype=float)
+            visibility = np.array([getattr(p, 'visibility', 0.0) for p in image.landmark], dtype=float)
+            image_xy = np.array([(getattr(p, 'x', np.nan), getattr(p, 'y', np.nan))
+                                 for p in image.landmark], dtype=float)
+            in_frame = np.all(np.isfinite(image_xy) & (image_xy >= 0) & (image_xy <= 1), axis=1)
+            confidence_ok = (np.isfinite(visibility) & (visibility > 0.65) & (visibility <= 1))
+            visible = confidence_ok & in_frame & np.all(np.isfinite(points), axis=1)
             points = self.filter(points, timestamp, valid_mask=visible[:, None])
+            # Confidence alone can remain high for model-inferred offscreen joints.
+            visibility = np.where(visible, visibility, 0.0)
         else:
             self.filter.reset()  # Never bridge tracking loss with stale motion history.
             points = np.full((33, 3), np.nan)
             visibility = np.zeros(33)
+            confidence_ok = in_frame = np.zeros(33, dtype=bool)
+        self._last_timestamp = timestamp
         metrics = BiomechanicsEngine.compute_joint_metrics(
             points, visibility, coordinate_frame=self.coordinate_frame)
         reasons = {}
@@ -112,9 +137,11 @@ class PoseProcessor:
             for suffix, _, indices in METRIC_ROWS:
                 key = f'{side}_{suffix}'
                 if metrics[key] is None:
-                    confidence = visibility[np.array(indices) + offset]
-                    if not np.all(np.isfinite(confidence) & (confidence > 0.65) & (confidence <= 1)):
+                    required = np.array(indices) + offset
+                    if not np.all(confidence_ok[required]):
                         reasons[key] = 'Occluded / Low Conf'
+                    elif not np.all(in_frame[required]):
+                        reasons[key] = 'Outside camera view'
                     elif (self.coordinate_frame == 'body' and suffix.startswith(('Shoulder', 'Hip'))
                           and BiomechanicsEngine.body_frame(points, visibility) is None):
                         reasons[key] = 'Torso frame unavailable'
@@ -236,7 +263,8 @@ class OpenCVDisplay:
 
 
 def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
-                 processor=None, max_frames=None, stall_timeout=3.0, on_frame=None):
+                 processor=None, max_frames=None, stall_timeout=3.0, on_frame=None,
+                 freshness_timeout=MAX_TRACKING_GAP_SECONDS):
     """Run fresh frames serially on the UI thread while camera polling continues.
 
     Dependencies are injectable for mock tests. Resource ownership transfers to
@@ -247,16 +275,23 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
     HUD pipeline aggregates describe completed frames, so they lag one frame.
     Optional on_frame(record) receives completed-frame timings and returns False
     to stop; observer work is excluded from that frame's latency, but affects FPS.
+    Results older than freshness_timeout are unavailable. On a capture stall a
+    single warning display clears the previous values; that display is excluded
+    from processed-frame/FPS counts and validation callbacks.
     """
     if max_frames is not None and max_frames <= 0:
         raise ValueError('max_frames must be positive')
     if not np.isfinite(stall_timeout) or stall_timeout <= 0:
         raise ValueError('stall_timeout must be positive and finite')
+    if not np.isfinite(freshness_timeout) or freshness_timeout <= 0:
+        raise ValueError('freshness_timeout must be positive and finite')
     display = OpenCVDisplay() if display is None else display
     renderer = HUDRenderer() if renderer is None else renderer
     processor = PoseProcessor() if processor is None else processor
     diagnostics = Diagnostics()
     sequence, processed = 0, 0
+    last_shape = (480, 640, 3)
+    stale_displayed = False
     last_arrival = time.perf_counter()
     with ExitStack() as resources:
         # ExitStack runs every callback even when a cleanup itself raises.
@@ -268,7 +303,17 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
         last_arrival = time.perf_counter()  # Model initialization is not camera stall time.
         while max_frames is None or processed < max_frames:
             sample = capture.wait_for_frame(sequence, timeout=0.05)
-            if sample is None:
+            if sample is None or sample.sequence <= sequence:
+                # Repeated snapshots never run inference twice or refresh this deadline.
+                waiting = time.perf_counter() - last_arrival
+                if waiting >= freshness_timeout and not stale_displayed:
+                    processor.reset()
+                    metrics, reasons = unavailable_metrics('Camera frame stale')
+                    stats = {**diagnostics.summary(), 'fps': 0.0, 'inference_current_ms': 0.0,
+                             'coordinate_frame': processor.coordinate_frame}
+                    display.submit(renderer.render(np.zeros(last_shape, dtype=np.uint8),
+                                                   None, metrics, reasons, stats))
+                    stale_displayed = True
                 key = display.poll_key()
                 if key in (ord('q'), 27):
                     break
@@ -276,31 +321,28 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
                     processor.reset()
                 if capture.error is not None or not capture.running:
                     raise CameraUnavailable(f'Camera stopped: {capture.error}')
-                if time.perf_counter() - last_arrival >= stall_timeout:
+                if waiting >= stall_timeout:
                     raise CameraUnavailable('Camera stalled; no new frames')
-                continue
-            if sample.sequence <= sequence:
-                # Defensive check: repeated snapshots must not run inference twice.
-                if time.perf_counter() - last_arrival >= stall_timeout:
-                    raise CameraUnavailable('Camera returned only stale frames')
-                key = display.poll_key()
-                if key in (ord('q'), 27):
-                    break
-                if key == ord('r'):
-                    processor.reset()
                 continue
             sequence = sample.sequence
             last_arrival = time.perf_counter()
             frame = sample.frame
+            last_shape = frame.shape
+            capture_time = sample.timestamp_ns / 1e9
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             rgb.flags.writeable = False
             inference_start = time.perf_counter()
             results = model.process(rgb)
             inference_ms = (time.perf_counter() - inference_start) * 1000
             diagnostics.record_inference(inference_ms)
-            metrics, reasons = processor.process(results, sample.timestamp_ns / 1e9)
+            metrics, reasons = processor.process(results, capture_time)
+            stale_displayed = time.perf_counter() - capture_time > freshness_timeout
+            if stale_displayed:
+                processor.reset()
+                metrics, reasons = unavailable_metrics('Camera frame stale')
             hud_stats = {**diagnostics.summary(), 'coordinate_frame': processor.coordinate_frame}
-            rendered = renderer.render(frame, results, metrics, reasons, hud_stats)
+            rendered = renderer.render(frame, None if stale_displayed else results,
+                                       metrics, reasons, hud_stats)
             display.submit(rendered)
             key = display.poll_key()
             completion = time.perf_counter()

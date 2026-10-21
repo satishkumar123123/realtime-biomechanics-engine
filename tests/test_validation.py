@@ -214,6 +214,8 @@ class ValidationTests(unittest.TestCase):
                 guards.enter_context(patch(f'cv2.{name}', side_effect=AssertionError('Headless GUI call')))
             guards.enter_context(patch('validation.VideoCaptureAsync', return_value=capture))
             guards.enter_context(patch('validation.run_pipeline', side_effect=run))
+            # Capture and processing use the same deterministic monotonic epoch.
+            guards.enter_context(patch('main.time.perf_counter', side_effect=lambda: capture.sequence*.02))
             guards.enter_context(patch('builtins.print'))
             path = Path(directory)/'synthetic_test_only.csv'
             status = main(['collect', '--participant', 'TEST_ONLY', '--joint', 'L_Elbow_Flex',

@@ -13,8 +13,13 @@ replay benchmark** and **54 known-target synthetic validation holds**, with raw
 CSVs, provenance, JSON reports and populated tables below. Physical webcam/desktop
 throughput and manual-reference accuracy have not been measured; the automated
 evidence is explicitly separated from those outstanding rubric requirements.
-See the [final regression audit](docs/REGRESSION_AUDIT.md) for the latest fixes,
-strict test results and headless smoke measurements.
+See the [21 October assignment audit](docs/AUDIT_2026-10-21.md) for the latest fixes:
+offscreen-landmark rejection, stale-camera feedback and filter recovery after
+capture gaps. **131 tests and 145 subtests pass.** A new 600-frame real-model
+headless photo-replay run achieved **33.69 FPS**, with inference mean/P95
+**24.81/33.23 ms** and pipeline mean/P95 **37.47/49.11 ms**. It also leaves the
+physical webcam/display and measured-reference requirements open. The older
+[regression audit](docs/REGRESSION_AUDIT.md) retains its historical results.
 
 ## System architecture
 
@@ -63,7 +68,8 @@ The model supplies 33 inferred 3D world landmarks in meters relative to the hip
 midpoint. These estimates support 3D segment angles without the direct
 foreshortening and unequal image-axis scaling of 2D pixel geometry. They remain
 inferred monocular coordinates, not calibrated motion-capture ground truth.
-Normalized image landmarks are used only for the wireframe and visibility scores.
+Normalized image landmarks supply the wireframe, visibility scores and an
+in-frame validity check; they are not used to calculate joint-angle geometry.
 The model runs with `smooth_landmarks=False`, since the application explicitly
 filters world coordinates; segmentation is disabled to avoid unused work.
 
@@ -163,7 +169,10 @@ The low-level engine preserves `coordinate_frame='camera'` as its compatibility
 default; the desktop explicitly selects body mode. `--coordinate-frame camera`
 retains fixed camera X-Y/Y-Z and requires front alignment. Its default signs assume
 anterior is -Z and subject-left is +X; low-level callers can reverse those signs.
-Signs in body mode follow landmark identities. Root-relative coordinates alone
+Signs in body mode follow landmark identities. These are separate planar
+projections, not a full clinical joint-coordinate or Euler-angle decomposition.
+Combined multi-plane arm motion can affect both displayed shoulder values;
+isolate the intended motion and interpret its corresponding plane. Root-relative coordinates alone
 do not provide anatomical alignment; the explicit torso transform is required.
 
 A segment perpendicular to a projection plane has no projected direction. For
@@ -230,7 +239,10 @@ beta=5 gives 89.84% reduction and 9.95 ms lag. These are signal experiments,
 not observed human joint-angle errors or guarantees of zero motion lag.
 
 Visibility must be finite and **strictly greater than 0.65** for every involved landmark;
-exactly 0.65 is rejected to match the audited threshold. Missing, low-confidence or nonfinite coordinates are masked,
+exactly 0.65 is rejected to match the audited threshold. Normalized image X/Y must
+also be finite and within [0, 1], even if model visibility remains high. Offscreen
+torso anchors invalidate body-frame shoulder/hip values; other reliable triplets
+remain usable. Missing, low-confidence or nonfinite coordinates are masked,
 never extrapolated into a valid angle. Invalid filter components return NaN and
 restart at their next valid observation. Pose loss and the `r` key reset history.
 The filter also accepts a whole-frame `None`: all established components become
@@ -238,8 +250,18 @@ unavailable and reinitialize independently when valid data returns. An initial
 `None` returns scalar NaN without committing a shape or timestamp.
 Duplicate/backward timestamps hold valid components; invalid components still
 clear history and return NaN;
-positive intervals at most `1e-12 s` are also guarded. Reset after a tracking gap
-when missing observations were not passed to the filter.
+positive intervals at most `1e-12 s` are also guarded. The application resets its
+filter when capture timestamps are separated by more than **0.25 seconds**, so
+resuming after a camera gap cannot blend a new pose with unobserved older motion.
+Direct users of the standalone filter must still reset it after unreported gaps.
+
+The pipeline also rejects results older than 0.25 seconds immediately before HUD
+rendering. While polling a stalled camera, it clears the feed/values to a stale
+status once the same interval elapses. Polling is every 50 ms; this is a freshness
+heuristic, not a hard real-time guarantee. Native inference/display calls cannot
+be preempted. Status-only redraws do not count as processed camera frames, inflate
+FPS or enter reference-hold collection. The existing three-second stall timeout
+still exits with a readable error and resource cleanup.
 
 The optional `BoneLengthConstraintChecker` freezes reliable calibrated upper-arm
 and shin lengths and flags relative drift above 20% by default. Custom segments
@@ -311,7 +333,9 @@ python main.py --coordinate-frame camera --beta 0.007
 The semi-transparent sidebar displays all twelve metrics, degree symbols,
 wireframe feedback, current/mean inference time, capture-to-UI mean/P95 and
 achieved FPS. Both inference and pipeline timings include rolling mean and P95.
-Unreliable values are red `Occluded / Low Conf`; reliable inputs with
+Unreliable values are red `Occluded / Low Conf`; offscreen or invalid image
+coordinates show `Outside camera view`, and expired results show
+`Camera frame stale`. Reliable inputs with
 degenerate geometry show `Undefined geometry`.
 Frame-dependent measurements show `Torso frame unavailable` when the torso basis
 cannot be trusted. The HUD title identifies body/camera mode.
@@ -665,6 +689,10 @@ The external references explain model/filter behavior and measurement context;
 none supplies clinical accuracy results for this implementation.
 
 ## Evaluation audit
+
+The [21 October assignment audit](docs/AUDIT_2026-10-21.md) is the current review
+against the biomechanics problem statement, including reproduced fixes, raw
+replay timings and the two remaining physical-measurement evidence gaps.
 
 See [Executive Audit Report](docs/AUDIT_REPORT.md) for the rubric compliance
 matrix, corrected defects, repeated test evidence and unresolved real-world

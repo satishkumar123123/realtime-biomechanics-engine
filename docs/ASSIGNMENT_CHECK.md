@@ -7,6 +7,11 @@ The [2 October regression audit](REGRESSION_AUDIT.md) supersedes this report's
 historical test counts and protobuf warning status. The physical-measurement
 evidence gaps below remain open.
 
+The [21 October review](AUDIT_2026-10-21.md) is the latest audit. It adds offscreen
+landmark gating and stale-frame/filter-gap fixes, 131 passing tests and 145
+subtests, and a new measured real-model headless replay. It retains both physical
+evidence gaps described below.
+
 On 3 October, the README gained a 600-frame real-model augmented-photo replay
 benchmark and 54 executed synthetic reference holds with raw data and verification
 commands. These supersede the blank-only automated evidence available when this
