@@ -13,9 +13,10 @@ replay benchmark** and **54 known-target synthetic validation holds**, with raw
 CSVs, provenance, JSON reports and populated tables below. Physical webcam/desktop
 throughput and manual-reference accuracy have not been measured; the automated
 evidence is explicitly separated from those outstanding rubric requirements.
-See the [21 October assignment audit](docs/AUDIT_2026-10-21.md) for the latest fixes:
-offscreen-landmark rejection, stale-camera feedback and filter recovery after
-capture gaps. **131 tests and 145 subtests pass.** A new 600-frame real-model
+See the [21 October assignment audit](docs/AUDIT_2026-10-21.md), including its software
+follow-up, for offscreen-landmark rejection, stale-camera/filter recovery, slow-UI
+freshness checks, camera-metadata handling and early-cancel fixes.
+**137 tests and 151 subtests pass.** The initial audit's 600-frame real-model
 headless photo-replay run achieved **33.69 FPS**, with inference mean/P95
 **24.81/33.23 ms** and pipeline mean/P95 **37.47/49.11 ms**. It also leaves the
 physical webcam/display and measured-reference requirements open. The older
@@ -255,13 +256,19 @@ filter when capture timestamps are separated by more than **0.25 seconds**, so
 resuming after a camera gap cannot blend a new pose with unobserved older motion.
 Direct users of the standalone filter must still reset it after unreported gaps.
 
-The pipeline also rejects results older than 0.25 seconds immediately before HUD
-rendering. While polling a stalled camera, it clears the feed/values to a stale
-status once the same interval elapses. Polling is every 50 ms; this is a freshness
-heuristic, not a hard real-time guarantee. Native inference/display calls cannot
-be preempted. Status-only redraws do not count as processed camera frames, inflate
-FPS or enter reference-hold collection. The existing three-second stall timeout
-still exits with a readable error and resource cleanup.
+The pipeline also rejects results older than 0.25 seconds before and after HUD
+rendering, and after the display/event pump returns. If rendering expires a
+frame, only an unavailable status is submitted. If a native display call takes
+too long, the app clears the numbers once it returns and invalidates callback
+metrics; quitting or closing the window prevents a status redraw from reopening it.
+The status uses a fresh blank canvas, without an old numeric overlay underneath.
+While polling a stalled camera, the same interval clears the feed/values once.
+Polling is every 50 ms; this is a freshness heuristic, not a hard real-time
+guarantee. Native inference/display calls cannot be preempted. Status-only
+redraws do not count as processed camera frames, inflate FPS or enter reference-hold
+collection. Cleanup after a slow display call is included in that frame's pipeline
+latency. The existing three-second stall timeout still exits with a readable error
+and resource cleanup.
 
 The optional `BoneLengthConstraintChecker` freezes reliable calibrated upper-arm
 and shin lengths and flags relative drift above 20% by default. Custom segments
@@ -351,6 +358,11 @@ cleanup. Backend release failures are surfaced as OSError rather than hidden.
 If a native driver read never returns, `stop()` raises a bounded `TimeoutError`;
 Python cannot safely force-cancel every camera backend's read. The daemon releases
 the camera once that call returns. Camera settings are requests, not promises.
+Capture metadata uses the dimensions of received frames rather than trusting
+driver-reported/requested dimensions. Width/height remain unknown until a frame
+arrives. The reported capture FPS is the driver's nominal value, not measured
+pipeline throughput; unsupported, nonfinite or nonpositive values become JSON
+`null`. Achieved end-to-end FPS is measured separately from completed frames.
 
 ### 4. Run automated benchmarks
 
@@ -640,6 +652,8 @@ median drift with the reference/configuration. Holds with <80% valid coverage,
 <5 valid frames, >3-degree spread/drift, a gap over 0.25 seconds between valid
 observations (including either window edge), or premature exit are retained as rejected.
 These are configurable collector quality heuristics, not clinical error limits.
+Cancelling before the first processed frame returns exit code 2 with
+`No frames collected; no hold saved.` and leaves the CSV unchanged.
 
 Default outputs are `validation/data/paired_holds.csv`,
 `validation/results/accuracy.json` and `validation/results/accuracy.md`. The

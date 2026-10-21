@@ -91,6 +91,7 @@ class VideoCaptureAsync:
                 self._latest = None
                 self._error = None
                 self._cleanup_error = None
+                self.actual_settings = {}
             factory = cv2.VideoCapture if self._capture_factory is None else self._capture_factory
             cap = factory(self.source, self.backend)
             worker = None
@@ -102,11 +103,16 @@ class VideoCaptureAsync:
                                     (cv2.CAP_PROP_FPS, self.fps),
                                     (cv2.CAP_PROP_BUFFERSIZE, 1)):
                     cap.set(prop, value)
-                self.actual_settings = {
-                    "width": cap.get(cv2.CAP_PROP_FRAME_WIDTH),
-                    "height": cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
-                    "fps": cap.get(cv2.CAP_PROP_FPS),
-                }
+                try:
+                    nominal_fps = float(cap.get(cv2.CAP_PROP_FPS))
+                except (cv2.error, TypeError, ValueError, OverflowError):
+                    nominal_fps = None
+                if nominal_fps is not None and (not math.isfinite(nominal_fps) or nominal_fps <= 0):
+                    nominal_fps = None
+                # Some drivers return zero, NaN or requested rather than actual
+                # dimensions. Only received images establish the resolution.
+                # FPS is the driver's nominal rate, not measured throughput.
+                self.actual_settings = {"width": None, "height": None, "fps": nominal_fps}
                 self._stop.clear()
                 with self._condition:
                     self._latest = None
@@ -158,6 +164,9 @@ class VideoCaptureAsync:
                 with self._condition:
                     if self._stop.is_set():
                         break
+                    height, width = frame.shape[:2]
+                    if (self.actual_settings['width'], self.actual_settings['height']) != (width, height):
+                        self.actual_settings = {**self.actual_settings, 'width': width, 'height': height}
                     self._sequence += 1
                     self._latest = FrameSnapshot(self._sequence, timestamp, frame)
                     self._condition.notify_all()

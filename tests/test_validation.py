@@ -198,6 +198,19 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(analyze_csv(path)['groups'][0]['mae_deg'], 1)
 
+    def test_cancel_before_first_frame_saves_no_hold(self):
+        capture = MockCapture()
+        capture.actual_settings = {'width': None, 'height': None, 'fps': None}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'pairs.csv'
+            with patch('validation.VideoCaptureAsync', return_value=capture), patch(
+                    'validation.run_pipeline'), patch('builtins.print') as output:
+                status = main(['collect', '--participant', 'P01', '--joint', 'L_Elbow_Flex',
+                               '--view', 'front', '--reference', '44', '--csv', str(path)])
+            self.assertEqual(status, 2)
+            self.assertFalse(path.exists())
+            self.assertTrue(any('No frames collected' in str(call) for call in output.call_args_list))
+
     def test_headless_collection_runs_full_loop_without_highgui(self):
         class ClockedCapture(MockCapture):
             actual_settings = {'width': 640, 'height': 480, 'fps': 60}

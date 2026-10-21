@@ -275,9 +275,11 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
     HUD pipeline aggregates describe completed frames, so they lag one frame.
     Optional on_frame(record) receives completed-frame timings and returns False
     to stop; observer work is excluded from that frame's latency, but affects FPS.
-    Results older than freshness_timeout are unavailable. On a capture stall a
-    single warning display clears the previous values; that display is excluded
-    from processed-frame/FPS counts and validation callbacks.
+    Results older than freshness_timeout are unavailable. Freshness is checked
+    before/after rendering and after the native UI event pump returns. A status
+    refresh is excluded from processed-frame/FPS counts and validation callbacks;
+    a refresh following a slow event pump is included in that frame's latency.
+    Native display calls cannot be preempted while they block.
     """
     if max_frames is not None and max_frames <= 0:
         raise ValueError('max_frames must be positive')
@@ -293,6 +295,16 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
     last_shape = (480, 640, 3)
     stale_displayed = False
     last_arrival = time.perf_counter()
+
+    def render_stale_status(idle=False):
+        metrics, reasons = unavailable_metrics('Camera frame stale')
+        stats = {**diagnostics.summary(), 'coordinate_frame': processor.coordinate_frame}
+        if idle:
+            stats.update(fps=0.0, inference_current_ms=0.0)
+        # A fresh canvas prevents old numbers showing through a translucent HUD.
+        return renderer.render(np.zeros(last_shape, dtype=np.uint8), None,
+                               metrics, reasons, stats)
+
     with ExitStack() as resources:
         # ExitStack runs every callback even when a cleanup itself raises.
         resources.callback(display.close)
@@ -308,11 +320,7 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
                 waiting = time.perf_counter() - last_arrival
                 if waiting >= freshness_timeout and not stale_displayed:
                     processor.reset()
-                    metrics, reasons = unavailable_metrics('Camera frame stale')
-                    stats = {**diagnostics.summary(), 'fps': 0.0, 'inference_current_ms': 0.0,
-                             'coordinate_frame': processor.coordinate_frame}
-                    display.submit(renderer.render(np.zeros(last_shape, dtype=np.uint8),
-                                                   None, metrics, reasons, stats))
+                    display.submit(render_stale_status(idle=True))
                     stale_displayed = True
                 key = display.poll_key()
                 if key in (ord('q'), 27):
@@ -340,12 +348,30 @@ def run_pipeline(capture, pose_factory=create_pose, display=None, renderer=None,
             if stale_displayed:
                 processor.reset()
                 metrics, reasons = unavailable_metrics('Camera frame stale')
-            hud_stats = {**diagnostics.summary(), 'coordinate_frame': processor.coordinate_frame}
-            rendered = renderer.render(frame, None if stale_displayed else results,
-                                       metrics, reasons, hud_stats)
+                rendered = render_stale_status()
+            else:
+                hud_stats = {**diagnostics.summary(), 'coordinate_frame': processor.coordinate_frame}
+                rendered = renderer.render(frame, results, metrics, reasons, hud_stats)
+            if not stale_displayed and time.perf_counter() - capture_time > freshness_timeout:
+                processor.reset()
+                metrics, reasons = unavailable_metrics('Camera frame stale')
+                rendered = render_stale_status()
+                stale_displayed = True
             display.submit(rendered)
             key = display.poll_key()
             completion = time.perf_counter()
+            if not stale_displayed and completion - capture_time > freshness_timeout:
+                processor.reset()
+                metrics, reasons = unavailable_metrics('Camera frame stale')
+                stale_displayed = True
+                if key not in (ord('q'), 27):
+                    # Clear delayed numeric output once; do not reopen a closed
+                    # window or count this status refresh as a processed frame.
+                    display.submit(render_stale_status())
+                    status_key = display.poll_key()
+                    if status_key in (ord('q'), 27, ord('r')):
+                        key = status_key
+                    completion = time.perf_counter()
             diagnostics.record_display(sample.timestamp_ns / 1e9, completion)
             processed += 1
             if on_frame is not None and on_frame({

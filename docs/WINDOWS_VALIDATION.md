@@ -61,7 +61,9 @@ Each command opens the camera, excludes one settling second, samples two seconds
 closes the pipeline and appends a paired hold to `validation/data/paired_holds.csv`.
 The window shows settling/measurement progress. Early exit, missing landmarks,
 low coverage, high spread/median drift or a gap over 0.25 seconds without a valid
-observation save a rejected hold and return code 2.
+observation save a rejected hold and return code 2. Cancelling before the first
+processed frame instead prints `No frames collected; no hold saved.`, returns
+code 2 and leaves the CSV unchanged.
 Keep rejected holds and repeat the measurement under an improved setup.
 
 Collect neutral and several comfortable bends, at least three repeats per

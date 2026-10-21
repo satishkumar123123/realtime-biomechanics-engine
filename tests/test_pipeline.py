@@ -236,6 +236,63 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(all(v is None for v in records[0]['metrics'].values()))
         self.assertEqual(set(records[0]['reasons'].values()), {'Camera frame stale'})
 
+    def test_slow_renderer_cannot_submit_expired_numeric_frame(self):
+        clock = SimpleNamespace(now=10.0)
+        cap, model, display = MockCapture(), MockPose(pose_result()), HeadlessDisplay()
+        cap.wait_for_frame = lambda *a, **k: FrameSnapshot(
+            1, int(clock.now*1e9), np.zeros((480, 640, 3), dtype=np.uint8))
+        rendered, records = [], []
+        class SlowRenderer:
+            def render(self, frame, results, metrics, reasons, diagnostics):
+                rendered.append((results, dict(metrics), frame.copy()))
+                frame.fill(sum(v is not None for v in metrics.values()))
+                clock.now += .3
+                return frame
+        with patch('main.time.perf_counter', side_effect=lambda: clock.now):
+            summary = run_pipeline(cap, lambda: model, display, renderer=SlowRenderer(),
+                                   max_frames=1, on_frame=records.append)
+        self.assertEqual(len(rendered), 2)
+        self.assertIsNone(rendered[1][0])
+        self.assertFalse(np.any(rendered[1][2]))  # Fresh canvas, no old numeric overlay.
+        self.assertEqual(display.frames, 1)
+        self.assertFalse(np.any(display.last))
+        self.assertEqual(summary['processed_frames'], 1)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['reliable_metrics'], 0)
+        self.assertEqual(set(records[0]['reasons'].values()), {'Camera frame stale'})
+        self.assertAlmostEqual(records[0]['pipeline_ms'], 600)
+
+    def test_slow_event_pump_clears_values_without_recounting_or_reopening(self):
+        for key in (-1, 27):
+            with self.subTest(key=key):
+                clock = SimpleNamespace(now=10.0)
+                cap, model = MockCapture(), MockPose(pose_result())
+                cap.wait_for_frame = lambda *a, **k: FrameSnapshot(
+                    1, int(clock.now*1e9), np.zeros((480, 640, 3), dtype=np.uint8))
+                class SlowDisplay(HeadlessDisplay):
+                    def poll_key(self):
+                        clock.now += .3
+                        return key
+                class Renderer:
+                    def render(self, frame, results, metrics, reasons, diagnostics):
+                        frame.fill(sum(v is not None for v in metrics.values()))
+                        return frame
+                display, records = SlowDisplay(), []
+                with patch('main.time.perf_counter', side_effect=lambda: clock.now):
+                    summary = run_pipeline(cap, lambda: model, display, renderer=Renderer(),
+                                           max_frames=1, on_frame=records.append)
+                self.assertEqual(display.frames, 1 if key == 27 else 2)
+                if key != 27:
+                    self.assertFalse(np.any(display.last))
+                self.assertEqual(model.calls, 1)
+                self.assertEqual(summary['processed_frames'], 1)
+                self.assertEqual(summary['diagnostics']['window_frames'], 1)
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]['reliable_metrics'], 0)
+                self.assertEqual(set(records[0]['reasons'].values()), {'Camera frame stale'})
+                self.assertAlmostEqual(records[0]['pipeline_ms'], 300 if key == 27 else 600)
+                self.assertTrue(cap.stopped and model.closed and display.closed)
+
     def test_reset_and_exit_controls(self):
         for key in (ord('q'), 27):
             with self.subTest(key=key):

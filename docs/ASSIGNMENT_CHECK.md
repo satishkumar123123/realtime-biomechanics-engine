@@ -7,10 +7,12 @@ The [2 October regression audit](REGRESSION_AUDIT.md) supersedes this report's
 historical test counts and protobuf warning status. The physical-measurement
 evidence gaps below remain open.
 
-The [21 October review](AUDIT_2026-10-21.md) is the latest audit. It adds offscreen
-landmark gating and stale-frame/filter-gap fixes, 131 passing tests and 145
-subtests, and a new measured real-model headless replay. It retains both physical
-evidence gaps described below.
+The [21 October review](AUDIT_2026-10-21.md) and its software follow-up are the latest
+audit. They add offscreen gating, stale-frame/filter-gap and slow-UI freshness
+fixes, reliable capture metadata and clean early cancellation. **137 tests and
+151 subtests pass.** The initial audit includes a measured real-model headless
+replay. Physical webcam and reference-angle verification remain deferred at the
+user's request; both evidence gaps below remain open.
 
 On 3 October, the README gained a 600-frame real-model augmented-photo replay
 benchmark and 54 executed synthetic reference holds with raw data and verification

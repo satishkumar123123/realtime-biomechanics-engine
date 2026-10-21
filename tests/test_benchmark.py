@@ -75,6 +75,15 @@ class BenchmarkTests(unittest.TestCase):
         self.assertGreaterEqual(report['measured_frames'], 2)
         self.assertLess(report['measured_interval_seconds'], 1)
 
+    def test_unsupported_camera_metadata_does_not_break_json_export(self):
+        args = build_parser().parse_args(['--mock-pose', '--frames', '3', '--warmup', '0'])
+        with patch.object(PacedReplay, 'get', return_value=float('nan')):
+            report = run_benchmark(args)
+        self.assertEqual(report['configuration']['negotiated_capture'],
+                         {'width': 640, 'height': 480, 'fps': None})
+        self.assertEqual(report['mean_reliable_metrics'], 12)
+        json.dumps(report, allow_nan=False)
+
     def test_recorded_source_loops_and_resizes(self):
         with tempfile.TemporaryDirectory() as directory:
             filename = Path(directory) / 'blank.avi'

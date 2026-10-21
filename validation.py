@@ -81,6 +81,9 @@ def main(argv=None):
             print('Maintain the measured static position. The assessor should not view software estimates.')
             run_pipeline(capture, display=HeadlessDisplay() if args.headless else OpenCVDisplay(),
                          renderer=HoldRenderer(collector), processor=processor, on_frame=collector)
+            if collector.start is None:
+                print('No frames collected; no hold saved.')
+                return 2
             settings = capture.actual_settings
             row = collector.row(participant=args.participant, view=args.view,
                                 reference_deg=args.reference, reference_method=args.reference_method,

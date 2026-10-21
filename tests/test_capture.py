@@ -1,6 +1,7 @@
 """Hardware-independent lifecycle and concurrency tests (stdlib unittest)."""
 import threading
 import gc
+import json
 from concurrent.futures import ThreadPoolExecutor
 import time
 import unittest
@@ -75,6 +76,33 @@ class CaptureTests(unittest.TestCase):
         later = self.capture.wait_for_frame(first.sequence + 1, timeout=2)
         self.assertIsNotNone(later)
         self.assertGreater(later.sequence, first.sequence + 1)
+
+    def test_unsupported_properties_are_unknown_and_json_safe(self):
+        for value in (0, -1, float('nan'), float('inf')):
+            with self.subTest(value=value):
+                self.camera.get = lambda prop: value
+                self.camera.gate.clear()
+                self.capture.start()
+                try:
+                    self.assertEqual(self.capture.actual_settings,
+                                     {'width': None, 'height': None, 'fps': None})
+                    self.camera.gate.set()
+                    sample = self.capture.wait_for_frame()
+                    self.assertIsNotNone(sample)
+                    self.assertEqual(self.capture.actual_settings,
+                                     {'width': 640, 'height': 480, 'fps': None})
+                    json.dumps(self.capture.actual_settings, allow_nan=False)
+                finally:
+                    self.camera.gate.set()
+                    self.capture.stop()
+
+    def test_resolution_comes_from_frames_not_driver_properties(self):
+        self.capture.width, self.capture.height = 1280, 720
+        self.capture.start()
+        sample = self.capture.wait_for_frame()
+        self.assertEqual(sample.frame.shape[:2], (480, 640))
+        self.assertEqual(self.capture.actual_settings,
+                         {'width': 640, 'height': 480, 'fps': 60.0})
 
     def test_concurrent_lifecycle_and_restart(self):
         with ThreadPoolExecutor(max_workers=8) as workers:
